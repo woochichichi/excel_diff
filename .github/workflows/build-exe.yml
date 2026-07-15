@@ -14,6 +14,9 @@ on:
       - 'build.bat'
       - '.github/workflows/build-exe.yml'
 
+permissions:
+  contents: write   # Release 생성/업로드용
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -51,9 +54,30 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "자기검증 실패 (exit $($p.ExitCode))" }
           Write-Host "자기검증 통과"
 
-      - name: Upload EXE
+      - name: Upload EXE (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: ExcelDiffMerge-win-x64
           path: ExcelDiffMerge.exe
           if-no-files-found: error
+
+      # 상시 다운로드 링크(Release). VERSION 기준 태그로 재발행.
+      # 고정 링크: .../releases/latest/download/ExcelDiffMerge.exe
+      - name: Publish Release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = (Get-Content VERSION).Trim()
+          $tag = "v$ver"
+          Write-Host "Release tag: $tag"
+          # 같은 태그가 있으면 지우고(태그까지 정리) 재발행.
+          gh release delete $tag --yes --cleanup-tag 2>&1 | Out-Null
+          Start-Sleep -Seconds 2
+          gh release create $tag ExcelDiffMerge.exe `
+            --title "ExcelDiffMerge $tag" `
+            --notes "Windows x64 build (csc, .NET Framework). --selftest 통과. commit $env:GITHUB_SHA" `
+            --latest
+          if ($LASTEXITCODE -ne 0) { throw "release create 실패 (exit $LASTEXITCODE)" }
+          Write-Host "Release 발행 완료: $tag"
