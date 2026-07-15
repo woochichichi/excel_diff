@@ -35,7 +35,17 @@ namespace ExcelDiffMerge
             if (args.Length >= 1 && args[0] == "--diff")
             {
                 EnsureConsole();
-                return RunDiffConsole(args);
+                return RunDiffConsole(args, false);
+            }
+            if (args.Length >= 1 && args[0] == "--difcsv")
+            {
+                EnsureConsole();
+                return RunDiffConsole(args, true);
+            }
+            if (args.Length >= 1 && args[0] == "--selftest")
+            {
+                EnsureConsole();
+                return SelfTest.Run();
             }
 
             Application.EnableVisualStyles();
@@ -97,23 +107,27 @@ namespace ExcelDiffMerge
         }
 
         // --------------------------------------------- 콘솔 2-way diff (§9-2)
-        private static int RunDiffConsole(string[] args)
+        // --diff  <좌.xlsx> <우.xlsx>   : Excel COM
+        // --difcsv <좌폴더> <우폴더>     : CSV(로컬 테스트, Excel 불필요)
+        private static int RunDiffConsole(string[] args, bool csv)
         {
             if (args.Length < 3)
             {
-                Console.WriteLine("사용법: ExcelDiffMerge.exe --diff <좌파일> <우파일>");
+                Console.WriteLine(csv
+                    ? "사용법: ExcelDiffMerge.exe --difcsv <좌CSV폴더> <우CSV폴더>"
+                    : "사용법: ExcelDiffMerge.exe --diff <좌파일> <우파일>");
                 return 2;
             }
             try
             {
                 DiffResult diff;
-                using (ExcelComReader reader = new ExcelComReader())
+                using (IWorkbookReader reader = csv ? (IWorkbookReader)new CsvWorkbookReader() : new ExcelComReader())
                 {
                     WorkbookData l = reader.LoadWorkbook(args[1]);
                     WorkbookData r = reader.LoadWorkbook(args[2]);
-                    diff = DiffEngine.Compare(l, r);
+                    diff = DiffEngine.Compare(l, r, AlignMode.Auto, -1);
                 }
-                Console.WriteLine("=== DIFF 요약 ===");
+                Console.WriteLine("=== DIFF 요약 (정렬:자동LCS) ===");
                 Console.WriteLine(diff.Summary());
                 foreach (SheetDiff sd in diff.Sheets)
                 {
@@ -121,12 +135,26 @@ namespace ExcelDiffMerge
                     Console.WriteLine(string.Format("[{0}] 변경 {1} / 추가 {2} / 삭제 {3}",
                         sd.Name, sd.ChangedCount, sd.AddedCount, sd.DeletedCount));
                     int shown = 0;
-                    foreach (DiffCell dc in sd.Cells)
+                    foreach (DiffRow dr in sd.Rows)
                     {
-                        if (shown++ >= 20) { Console.WriteLine("   … (이하 생략)"); break; }
-                        Console.WriteLine(string.Format("   {0}{1} [{2}]  '{3}' -> '{4}'",
-                            MainForm.ColLetter(dc.Col), dc.Row, dc.Status,
-                            DiffEngine.ToText(dc.OldValue), DiffEngine.ToText(dc.NewValue)));
+                        if (dr.Kind == RowKind.Same) continue;
+                        string tag = dr.Kind == RowKind.Added ? "＋행추가"
+                                   : dr.Kind == RowKind.Deleted ? "－행삭제" : "≠행변경";
+                        string lrow = dr.LeftRow >= 0 ? dr.LeftRow.ToString() : "-";
+                        string rrow = dr.RightRow >= 0 ? dr.RightRow.ToString() : "-";
+                        Console.WriteLine(string.Format("   {0} (좌{1}/우{2})", tag, lrow, rrow));
+                        if (dr.Changes != null)
+                        {
+                            foreach (KeyValuePair<int, CellStatus> ch in dr.Changes)
+                            {
+                                object lv = dr.LeftRow >= 0 && sd.Left != null ? sd.Left.GetValueAbs(dr.LeftRow, ch.Key) : null;
+                                object rv = dr.RightRow >= 0 && sd.Right != null ? sd.Right.GetValueAbs(dr.RightRow, ch.Key) : null;
+                                Console.WriteLine(string.Format("       {0} [{1}]  '{2}' -> '{3}'",
+                                    MainForm.ColLetter(ch.Key), ch.Value,
+                                    DiffEngine.ToText(lv), DiffEngine.ToText(rv)));
+                            }
+                        }
+                        if (++shown >= 30) { Console.WriteLine("   … (이하 생략)"); break; }
                     }
                 }
                 return 0;

@@ -27,7 +27,7 @@ namespace ExcelDiffMerge
         private DataGridView _grid;
         private ToolStripStatusLabel _lblSummary;
         private ToolStripProgressBar _progress;
-        private BackgroundWorker _worker;
+        private bool _busy;
 
         private string _basePath;
         private readonly List<string> _versionPaths = new List<string>();
@@ -123,9 +123,6 @@ namespace ExcelDiffMerge
             status.Items.Add(_progress);
             Controls.Add(status);
 
-            _worker = new BackgroundWorker();
-            _worker.DoWork += Worker_DoWork;
-            _worker.RunWorkerCompleted += Worker_Completed;
         }
 
         private static void AddBtn(ToolStrip t, string text, EventHandler h)
@@ -179,36 +176,46 @@ namespace ExcelDiffMerge
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            if (_worker.IsBusy) return;
+            if (_busy) return;
+            _busy = true;
             _adopt.Clear();
             _progress.Visible = true;
             _lblSummary.Text = "로드/비교 중…";
-            _worker.RunWorkerAsync();
+
+            string basePath = _basePath;
+            List<string> versionPaths = new List<string>(_versionPaths);
+            bool useCsv = Directory.Exists(basePath);
+
+            // COM 로드는 STA 전용 스레드에서(조사 반영). CSV 폴더면 CsvReader.
+            StaTask.Run<NWayResult>(
+                delegate
+                {
+                    using (IWorkbookReader reader = useCsv ? (IWorkbookReader)new CsvWorkbookReader() : new ExcelComReader())
+                    {
+                        WorkbookData baseWb = reader.LoadWorkbook(basePath);
+                        List<WorkbookData> versions = new List<WorkbookData>();
+                        foreach (string p in versionPaths) versions.Add(reader.LoadWorkbook(p));
+                        return NWayDiffEngine.Compare(baseWb, versions);
+                    }
+                },
+                delegate(NWayResult res, Exception err)
+                {
+                    BeginInvoke((MethodInvoker)delegate { OnLoaded(res, err); });
+                });
         }
 
-        private void Worker_DoWork(object sender, DoWorkEventArgs e)
+        private void OnLoaded(NWayResult res, Exception err)
         {
-            using (ExcelComReader reader = new ExcelComReader())
-            {
-                WorkbookData baseWb = reader.LoadWorkbook(_basePath);
-                List<WorkbookData> versions = new List<WorkbookData>();
-                foreach (string p in _versionPaths)
-                    versions.Add(reader.LoadWorkbook(p));
-                e.Result = NWayDiffEngine.Compare(baseWb, versions);
-            }
-        }
-
-        private void Worker_Completed(object sender, RunWorkerCompletedEventArgs e)
-        {
+            _busy = false;
             _progress.Visible = false;
-            if (e.Error != null)
+            if (err != null)
             {
-                _lblSummary.Text = "오류: " + e.Error.Message;
-                MessageBox.Show(this, e.Error.Message, "비교 실패",
+                _lblSummary.Text = "오류: " + err.Message;
+                MessageBox.Show(this, err.Message, "비교 실패",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
-            _result = (NWayResult)e.Result;
+            _result = res;
             PopulateTabs();
             _lblSummary.Text = _result.Summary();
         }

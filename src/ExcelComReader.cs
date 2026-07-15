@@ -14,16 +14,18 @@ namespace ExcelDiffMerge
     ///  - 우리가 띄운 Excel 인스턴스만 정리. 사용자가 이미 열어둔 Excel 은 건드리지 않음(별도 인스턴스).
     ///  - COM 객체는 역순으로 Marshal.ReleaseComObject, 예외 시에도 finally 로 Quit 보장.
     /// </summary>
-    public sealed class ExcelComReader : IDisposable
+    public sealed class ExcelComReader : IWorkbookReader
     {
         // xlCalculation
         private const int xlCalculationManual = -4135;
         private const int xlCalculationAutomatic = -4105;
         // msoAutomationSecurity
+        private const int msoAutomationSecurityLow = 1;
         private const int msoAutomationSecurityForceDisable = 3;
 
         private dynamic _xl;              // Excel.Application (우리 전용 인스턴스)
         private int _savedCalculation = xlCalculationAutomatic;
+        private int _savedAutomationSecurity = msoAutomationSecurityLow;
         private bool _optionsApplied;
 
         public ExcelComReader()
@@ -37,7 +39,9 @@ namespace ExcelDiffMerge
             _xl.Visible = false;
             _xl.DisplayAlerts = false;
             _xl.AskToUpdateLinks = false;
-            // 매크로 자동실행 차단 (spec §7).
+            try { _xl.Interactive = false; } catch { }
+            // 매크로 자동실행 차단 (spec §7). AutomationSecurity 는 프로세스 전역이라 원복 대비 저장.
+            try { _savedAutomationSecurity = (int)_xl.AutomationSecurity; } catch { }
             try { _xl.AutomationSecurity = msoAutomationSecurityForceDisable; } catch { }
         }
 
@@ -75,9 +79,12 @@ namespace ExcelDiffMerge
             try
             {
                 workbooks = _xl.Workbooks;
-                // Open(Filename, UpdateLinks=0, ReadOnly=true) — dynamic 이므로 optional 인자는 런타임 처리.
-                // named argument 미지원 csc 환경 대비: positional 로만 호출.
-                wb = workbooks.Open(path, 0, true);
+                // Open positional (named arg 미지원 csc 대비):
+                //  1 Filename, 2 UpdateLinks=0, 3 ReadOnly=true, 7 IgnoreReadOnlyRecommended=true, 11 Notify=false
+                // → 이미 열린 파일/읽기전용 권장 프롬프트를 선제 차단(조사 반영).
+                wb = workbooks.Open(path, 0, true,
+                    Type.Missing, Type.Missing, Type.Missing, true,
+                    Type.Missing, Type.Missing, Type.Missing, false);
 
                 dynamic sheets = wb.Worksheets;
                 int sheetCount = (int)sheets.Count;
@@ -246,6 +253,8 @@ namespace ExcelDiffMerge
         public void Dispose()
         {
             RestoreFastOptions();
+            // AutomationSecurity 는 프로세스 전역 → 원복(조사 반영).
+            try { if (_xl != null) _xl.AutomationSecurity = _savedAutomationSecurity; } catch { }
             if (_xl != null)
             {
                 try { _xl.Quit(); } catch { }
