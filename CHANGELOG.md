@@ -22,6 +22,8 @@
   - CLI `--selftest`: 메모리 목업으로 DiffEngine/RowAligner 자기검증(현장에서 즉시 확인).
   - `tests/reference.py`: 파이썬 가상테스트(알고리즘 레퍼런스, 리눅스에서도 실행 가능).
   - `tests/data/` 목업 CSV(변경/추가/삭제/행삽입/행삭제/수식/시트추가·삭제 케이스).
+  - `tests/make_xlsx.py` + `tests/data/old.xlsx`,`new.xlsx`: 외부 라이브러리 0 으로
+    생성한 실제 .xlsx 목업(진짜 수식 포함) → Excel COM 경로/DRM 흐름 로컬 테스트.
 - **UX (시장조사 반영)**:
   - 셀 상세 패널(하단): 선택 셀의 좌/우 값·수식·상태 표시.
   - 색상 범례 바(변경/추가/삭제/병합됨/정렬빈칸).

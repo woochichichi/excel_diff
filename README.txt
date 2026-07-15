@@ -77,6 +77,14 @@
        python3 tests\reference.py
      → C# RowAligner 와 동일 알고리즘을 검증. 행 삽입/삭제 cascade 방지 확인.
 
+  5) 실제 .xlsx 목업으로 Excel COM 경로 테스트:
+       tests\data\old.xlsx, tests\data\new.xlsx  (CSV 목업과 동일 데이터 + 진짜 수식)
+       GUI 에서 [좌측 열기]=old.xlsx, [우측 열기]=new.xlsx → [비교].
+     * 재생성: python3 tests\make_xlsx.py (외부 라이브러리 0, 표준 zipfile).
+     * 참고: xlsx 는 '계산된 값' 을 담으므로, Base 를 바꾸면 그에 의존하는 Total 값도
+       함께 변경으로 잡힙니다(실제 Excel 동작). CSV 목업은 수식을 정적 문자열로 다뤄
+       직접 수정한 셀만 표시 — 둘 다 정상이며 관점이 다릅니다.
+
 
 ■ 행 정렬 방식 (툴바 '정렬' 선택 — spec §5-4 해결)
   · 자동정렬(LCS)  : 유사도 기반. 행 삽입/삭제를 인지하고, 수정된 행은 '변경'으로
