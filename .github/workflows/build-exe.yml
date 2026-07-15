@@ -1,0 +1,59 @@
+name: Build Windows EXE
+
+# viewer 리포의 build-exe.yml 을 참고. 다만 이 프로젝트는 C#(.NET Framework) 이므로
+# 현장 build.bat 과 동일하게 csc(Framework64\v4.0.30319)로 직접 빌드한다.
+# 빌드 후 --selftest 로 로직까지 검증(그린이면 exe 를 아티팩트로 업로드).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/md-file-development-hsbp88
+    paths:
+      - 'src/**'
+      - 'build.bat'
+      - '.github/workflows/build-exe.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build EXE (csc, .NET Framework, x64)
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+          if (-not (Test-Path $csc)) { throw "csc.exe 를 찾을 수 없습니다." }
+          Write-Host "Using compiler: $csc"
+          $srcs = Get-ChildItem -Path src -Filter *.cs | ForEach-Object { $_.FullName }
+          & $csc /nologo /target:winexe /platform:x64 /out:ExcelDiffMerge.exe /optimize+ `
+            /reference:System.dll `
+            /reference:System.Core.dll `
+            /reference:System.Data.dll `
+            /reference:System.Windows.Forms.dll `
+            /reference:System.Drawing.dll `
+            /reference:Microsoft.CSharp.dll `
+            $srcs
+          if ($LASTEXITCODE -ne 0) { throw "빌드 실패 (csc exit $LASTEXITCODE)" }
+          Write-Host "빌드 성공: ExcelDiffMerge.exe"
+
+      - name: Self-test (로직 검증)
+        shell: pwsh
+        run: |
+          # winexe 라 콘솔에서 즉시 반환됨 → Start-Process 로 종료대기 + 출력 리다이렉트.
+          $p = Start-Process -FilePath .\ExcelDiffMerge.exe -ArgumentList '--selftest' `
+                 -Wait -PassThru -RedirectStandardOutput selftest.out -RedirectStandardError selftest.err
+          if (Test-Path selftest.out) { Get-Content selftest.out }
+          if (Test-Path selftest.err) { Get-Content selftest.err }
+          if ($p.ExitCode -ne 0) { throw "자기검증 실패 (exit $($p.ExitCode))" }
+          Write-Host "자기검증 통과"
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExcelDiffMerge-win-x64
+          path: ExcelDiffMerge.exe
+          if-no-files-found: error
