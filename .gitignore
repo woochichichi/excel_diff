@@ -1,0 +1,17 @@
+# 빌드 산출물 (현장 csc 빌드로 생성)
+*.exe
+*.pdb
+*.obj
+bin/
+obj/
+
+# 런타임 설정/백업
+settings.ini
+*.bak.xlsx
+*.bak.xls
+*.bak.xlsm
+
+# 임시 Excel 잠금 파일
+~$*.xlsx
+~$*.xls
+~$*.xlsm
