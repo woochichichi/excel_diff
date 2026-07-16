@@ -69,6 +69,15 @@ namespace ExcelDiffMerge
         private float _gridFontSize = 9f;
         private Font _gridFont;                       // 현재 그리드 폰트(교체 시 이전 것 Dispose)
 
+        // 파일별 저장 버튼(U2) / 경로 툴팁
+        private Button _btnSaveLeftFile;
+        private Button _btnSaveRightFile;
+        private ToolTip _pathTip;
+
+        // 상세 패널 중복 갱신 방지(같은 셀 재선택 시 재계산 생략 — 속도)
+        private int _lastDetailRow = -1;
+        private int _lastDetailCol = -1;
+
         // 상태
         private string _leftPath;
         private string _rightPath;
@@ -91,6 +100,10 @@ namespace ExcelDiffMerge
 
         private readonly Dictionary<string, object> _pendingLeft = new Dictionary<string, object>();
         private readonly Dictionary<string, object> _pendingRight = new Dictionary<string, object>();
+
+        // 파일별(한쪽만) 저장 후 재비교 시, 저장하지 않은 방향의 병합 대기를 유지하기 위한 스냅샷.
+        private Dictionary<string, object> _pendingRestoreLeft;
+        private Dictionary<string, object> _pendingRestoreRight;
 
         private int _navIndex = -1;
 
@@ -143,7 +156,7 @@ namespace ExcelDiffMerge
             // 병합: 부등호가 값이 가는 '방향'(목적지)을 가리킴.  '왼쪽 > 오른쪽' = 왼쪽값을 오른쪽으로.
             _btnMergeLR = BigBtn("왼쪽 > 오른쪽", "선택한 셀: 왼쪽(좌) 값을 오른쪽(우)에 적용(병합 대기) — Alt+→", delegate { MergeSelected(true); }, false);
             _btnMergeRL = BigBtn("왼쪽 < 오른쪽", "선택한 셀: 오른쪽(우) 값을 왼쪽(좌)에 적용(병합 대기) — Alt+←", delegate { MergeSelected(false); }, false);
-            _btnSave = BigBtn("저장", "병합 결과를 원본 파일에 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
+            _btnSave = BigBtn("저장", "양쪽(좌·우) 병합 결과를 각 원본 파일에 모두 저장 (Ctrl+S). 한쪽만 저장하려면 경로 옆 [이 파일에 저장]을 쓰세요.", delegate { SaveMerges(); }, true);
             primary.Items.Add(_btnMergeLR);
             primary.Items.Add(_btnMergeRL);
             primary.Items.Add(_btnSave);
@@ -155,13 +168,11 @@ namespace ExcelDiffMerge
             secondary.Dock = DockStyle.Top;
             secondary.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular);
 
-            _btnRecent = new ToolStripDropDownButton("최근 비교 ▾");
-            _btnRecent.ToolTipText = "최근 비교한 좌/우 파일 쌍 (클릭 시 불러와 비교)";
-            _btnRecent.DropDownOpening += delegate { BuildRecentMenu(); };
-            secondary.Items.Add(_btnRecent);
-            secondary.Items.Add(new ToolStripSeparator());
+            // 위험 동작 강조색(연주황) — 전체병합/병합취소 구분용.
+            Color dangerTint = Color.FromArgb(255, 224, 178);
 
-            secondary.Items.Add(new ToolStripLabel("정렬:"));
+            // ── 그룹: 정렬 ──
+            secondary.Items.Add(GroupCaption("정렬"));
             _cboAlign = new ToolStripComboBox();
             _cboAlign.DropDownStyle = ComboBoxStyle.DropDownList;
             _cboAlign.Items.AddRange(new object[] { "좌표(빠름)", "자동정렬(LCS)", "키 컬럼" });
@@ -176,6 +187,9 @@ namespace ExcelDiffMerge
             _txtKeyCol.LostFocus += delegate { OnKeyColChanged(); };
             secondary.Items.Add(_txtKeyCol);
             secondary.Items.Add(new ToolStripSeparator());
+
+            // ── 그룹: 보기 ──
+            secondary.Items.Add(GroupCaption("보기"));
             _btnChangesOnly = new ToolStripButton("변경만 보기");
             _btnChangesOnly.CheckOnClick = true;
             _btnChangesOnly.ToolTipText = "변경/추가/삭제 행만 표시(동일 행 접기)";
@@ -187,29 +201,39 @@ namespace ExcelDiffMerge
             _btnChangeList.ToolTipText = "우측 변경목록 패널 표시/숨기기 (클릭 시 해당 셀로 이동)";
             _btnChangeList.CheckedChanged += delegate { if (_changePanel != null) _changePanel.Visible = _btnChangeList.Checked; };
             secondary.Items.Add(_btnChangeList);
-            secondary.Items.Add(new ToolStripSeparator());
-            secondary.Items.Add(new ToolStripLabel("전체병합:"));
-            _btnMergeAllLR = SmallBtn("모두 왼쪽>오른쪽", "모든 차이 셀에 대해 왼쪽 값을 오른쪽에 한꺼번에 적용", delegate { MergeAll(true); });
-            _btnMergeAllRL = SmallBtn("모두 왼쪽<오른쪽", "모든 차이 셀에 대해 오른쪽 값을 왼쪽에 한꺼번에 적용", delegate { MergeAll(false); });
-            secondary.Items.Add(_btnMergeAllLR);
-            secondary.Items.Add(_btnMergeAllRL);
-            secondary.Items.Add(new ToolStripSeparator());
-            secondary.Items.Add(SmallBtn("N-way 취합…", "여러 버전(3개 이상) 취합 비교 — 사용법 안내 포함", delegate { OpenNWayDialog(); }));
-            secondary.Items.Add(SmallBtn("CSV폴더비교(테스트)", "Excel 없이 CSV 폴더 2개 비교", delegate { StartCompareCsv(); }));
-            secondary.Items.Add(new ToolStripSeparator());
             _btnFontUp = SmallBtn("글자+", "그리드 글자 크게 (Ctrl+마우스휠 위)", delegate { ApplyGridFont(_gridFontSize + 1f); });
             _btnFontDown = SmallBtn("글자−", "그리드 글자 작게 (Ctrl+마우스휠 아래)", delegate { ApplyGridFont(_gridFontSize - 1f); });
             secondary.Items.Add(_btnFontUp);
             secondary.Items.Add(_btnFontDown);
             _btnAutoFit = SmallBtn("열 자동맞춤", "표시 중인 셀 기준으로 열 너비 자동 조정 (열 머리글 더블클릭=해당 열만)", delegate { AutoFitColumns(); });
             secondary.Items.Add(_btnAutoFit);
+            secondary.Items.Add(new ToolStripSeparator());
+
+            // ── 그룹: 병합(위험 동작 — 연주황 강조) ──
+            secondary.Items.Add(GroupCaption("병합"));
+            _btnMergeAllLR = SmallBtn("모두 왼쪽>오른쪽", "모든 차이 셀에 대해 왼쪽 값을 오른쪽에 한꺼번에 적용", delegate { MergeAll(true); });
+            _btnMergeAllRL = SmallBtn("모두 왼쪽<오른쪽", "모든 차이 셀에 대해 오른쪽 값을 왼쪽에 한꺼번에 적용", delegate { MergeAll(false); });
             _btnCancelMerge = SmallBtn("병합 취소", "병합 대기 중인 변경을 모두 취소", delegate { CancelAllMerges(); });
+            _btnMergeAllLR.BackColor = dangerTint;
+            _btnMergeAllRL.BackColor = dangerTint;
+            _btnCancelMerge.BackColor = dangerTint;
+            secondary.Items.Add(_btnMergeAllLR);
+            secondary.Items.Add(_btnMergeAllRL);
             secondary.Items.Add(_btnCancelMerge);
             secondary.Items.Add(new ToolStripSeparator());
-            secondary.Items.Add(SmallBtn("로그 열기", "로그 파일 위치 보기", delegate { ShowLogPath(); }));
 
-            // ----- 범례
-            Panel legend = BuildLegend();
+            // ── 그룹: 도구 ──
+            secondary.Items.Add(GroupCaption("도구"));
+            secondary.Items.Add(SmallBtn("N-way 취합…", "여러 버전(3개 이상) 취합 비교 — 사용법 안내 포함", delegate { OpenNWayDialog(); }));
+            secondary.Items.Add(SmallBtn("CSV폴더비교(테스트)", "Excel 없이 CSV 폴더 2개 비교", delegate { StartCompareCsv(); }));
+            secondary.Items.Add(SmallBtn("로그 열기", "로그 파일 위치 보기", delegate { ShowLogPath(); }));
+            secondary.Items.Add(new ToolStripSeparator());
+
+            // ── 그룹: 최근 비교 ──
+            _btnRecent = new ToolStripDropDownButton("최근 비교 ▾");
+            _btnRecent.ToolTipText = "최근 비교한 좌/우 파일 쌍 (클릭 시 불러와 비교)";
+            _btnRecent.DropDownOpening += delegate { BuildRecentMenu(); };
+            secondary.Items.Add(_btnRecent);
 
             // ----- 시트 탭
             _tabs = new TabControl();
@@ -217,20 +241,44 @@ namespace ExcelDiffMerge
             _tabs.Height = 26;
             _tabs.SelectedIndexChanged += delegate { OnSheetChanged(); };
 
-            // ----- 경로 라벨
+            // ----- 경로 라벨 + 파일별 저장 버튼(U2: 어느 파일이 저장되는지 직관화)
+            _pathTip = new ToolTip();
             Panel pathPanel = new Panel();
             pathPanel.Dock = DockStyle.Top;
-            pathPanel.Height = 22;
+            pathPanel.Height = 26;
+
+            // 좌측 절반(경로 라벨 + [이 파일에 저장])
+            Panel leftHalf = new Panel();
+            leftHalf.Dock = DockStyle.Left; leftHalf.Width = 640;
             _lblLeftPath = new Label();
             _lblLeftPath.Text = "(좌측 파일 없음)";
-            _lblLeftPath.Dock = DockStyle.Left; _lblLeftPath.Width = 640;
+            _lblLeftPath.Dock = DockStyle.Fill;
             _lblLeftPath.TextAlign = ContentAlignment.MiddleLeft; _lblLeftPath.AutoEllipsis = true;
+            _btnSaveLeftFile = new Button();
+            _btnSaveLeftFile.Text = "이 파일에 저장";
+            _btnSaveLeftFile.Dock = DockStyle.Right; _btnSaveLeftFile.Width = 150;
+            _btnSaveLeftFile.Enabled = false;
+            _btnSaveLeftFile.Click += delegate { SaveMergesSide(true); };
+            leftHalf.Controls.Add(_lblLeftPath);
+            leftHalf.Controls.Add(_btnSaveLeftFile);
+
+            // 우측 절반(경로 라벨 + [이 파일에 저장])
+            Panel rightHalf = new Panel();
+            rightHalf.Dock = DockStyle.Fill;
             _lblRightPath = new Label();
             _lblRightPath.Text = "(우측 파일 없음)";
             _lblRightPath.Dock = DockStyle.Fill;
             _lblRightPath.TextAlign = ContentAlignment.MiddleLeft; _lblRightPath.AutoEllipsis = true;
-            pathPanel.Controls.Add(_lblRightPath);
-            pathPanel.Controls.Add(_lblLeftPath);
+            _btnSaveRightFile = new Button();
+            _btnSaveRightFile.Text = "이 파일에 저장";
+            _btnSaveRightFile.Dock = DockStyle.Right; _btnSaveRightFile.Width = 150;
+            _btnSaveRightFile.Enabled = false;
+            _btnSaveRightFile.Click += delegate { SaveMergesSide(false); };
+            rightHalf.Controls.Add(_lblRightPath);
+            rightHalf.Controls.Add(_btnSaveRightFile);
+
+            pathPanel.Controls.Add(rightHalf);
+            pathPanel.Controls.Add(leftHalf);
 
             // ----- 좌우 그리드 + 마커바
             SplitContainer split = new SplitContainer();
@@ -275,13 +323,19 @@ namespace ExcelDiffMerge
             _progress.Style = ProgressBarStyle.Marquee; _progress.Visible = false;
             status.Items.Add(_lblSummary);
             status.Items.Add(_progress);
+            // 색상 범례를 상단에서 우측 하단(상태바 오른쪽 끝)으로 이동 — 상단 공간 회수(U4-legend).
+            // _lblSummary.Spring=true 라 이후 아이템들은 자동으로 우측 정렬됨.
+            AddStatusLegend(status, ColChanged, "변경");
+            AddStatusLegend(status, ColAdded, "추가");
+            AddStatusLegend(status, ColDeleted, "삭제");
+            AddStatusLegend(status, ColMerged, "병합됨");
+            AddStatusLegend(status, ColGap, "빈칸");
 
             // 도킹 z-order: Fill 먼저, 그 다음 Right(중앙밴드), 이어서 Top(안쪽→바깥쪽), 끝에 Bottom.
             Controls.Add(split);        // Fill
             Controls.Add(_changePanel); // Right (그리드 오른쪽, 변경목록)
             Controls.Add(pathPanel);    // Top
             Controls.Add(_tabs);        // Top
-            Controls.Add(legend);       // Top
             Controls.Add(secondary);    // Top (보조, 주툴바 아래)
             Controls.Add(primary);      // Top (최상단, 주툴바)
             Controls.Add(detailPanel);  // Bottom
@@ -466,6 +520,16 @@ namespace ExcelDiffMerge
             return b;
         }
 
+        /// <summary>보조 툴바 기능 그룹 앞에 붙는 회색 캡션(정렬/보기/병합/도구).</summary>
+        private static ToolStripLabel GroupCaption(string text)
+        {
+            ToolStripLabel l = new ToolStripLabel(text);
+            l.ForeColor = Color.Gray;
+            l.Font = new Font("Segoe UI", 8.5F, FontStyle.Bold);
+            l.Margin = new Padding(6, 1, 2, 2);
+            return l;
+        }
+
         private ToolStripButton SmallBtn(string text, string tip, EventHandler h)
         {
             ToolStripButton b = new ToolStripButton(text);
@@ -491,6 +555,27 @@ namespace ExcelDiffMerge
             if (_btnChangesOnly != null) _btnChangesOnly.Enabled = realDiff;
             if (_btnSave != null) _btnSave.Enabled = hasPending;
             if (_btnCancelMerge != null) _btnCancelMerge.Enabled = hasPending;
+
+            // 파일별 저장 버튼(U2): 해당 방향 대기 있을 때만 활성 + 대기 건수 표시 + 툴팁에 전체 경로.
+            bool canSave = !IsReadOnlySession();
+            if (_btnSaveLeftFile != null)
+            {
+                int nl = _pendingLeft.Count;
+                _btnSaveLeftFile.Enabled = canSave && nl > 0;
+                _btnSaveLeftFile.Text = nl > 0 ? ("이 파일에 저장 (" + nl + ")") : "이 파일에 저장";
+                if (_pathTip != null)
+                    _pathTip.SetToolTip(_btnSaveLeftFile,
+                        "좌측 파일에 저장: " + (string.IsNullOrEmpty(_leftPath) ? "(파일 없음)" : _leftPath));
+            }
+            if (_btnSaveRightFile != null)
+            {
+                int nr = _pendingRight.Count;
+                _btnSaveRightFile.Enabled = canSave && nr > 0;
+                _btnSaveRightFile.Text = nr > 0 ? ("이 파일에 저장 (" + nr + ")") : "이 파일에 저장";
+                if (_pathTip != null)
+                    _pathTip.SetToolTip(_btnSaveRightFile,
+                        "우측 파일에 저장: " + (string.IsNullOrEmpty(_rightPath) ? "(파일 없음)" : _rightPath));
+            }
         }
 
         private bool IsReadOnlySession()
@@ -534,37 +619,36 @@ namespace ExcelDiffMerge
             catch { }
         }
 
-        private Panel BuildLegend()
+        /// <summary>상태바 오른쪽 끝에 색상 스와치 + 라벨 한 쌍을 범례로 추가.</summary>
+        private static void AddStatusLegend(StatusStrip status, Color color, string text)
         {
-            Panel legend = new Panel();
-            legend.Dock = DockStyle.Top;
-            legend.Height = 22;
-            int x = 8;
-            x = AddLegendItem(legend, x, ColChanged, "변경");
-            x = AddLegendItem(legend, x, ColAdded, "추가");
-            x = AddLegendItem(legend, x, ColDeleted, "삭제");
-            x = AddLegendItem(legend, x, ColMerged, "병합됨");
-            x = AddLegendItem(legend, x, ColGap, "빈칸(정렬)");
-            return legend;
+            ToolStripStatusLabel sw = new ToolStripStatusLabel("  ");
+            sw.BackColor = color;
+            sw.BorderSides = ToolStripStatusLabelBorderSides.All;
+            sw.BorderStyle = Border3DStyle.Flat;
+            sw.Margin = new Padding(4, 3, 0, 3);
+            status.Items.Add(sw);
+            ToolStripStatusLabel lb = new ToolStripStatusLabel(text);
+            lb.Margin = new Padding(2, 0, 6, 0);
+            status.Items.Add(lb);
         }
 
-        private static int AddLegendItem(Panel host, int x, Color color, string text)
+        /// <summary>
+        /// 더블버퍼링을 켠 DataGridView. 기본 DataGridView 는 DoubleBuffered=false 라
+        /// 스크롤/리페인트마다 깜빡임·지연이 크다 → 화면 조작 속도의 가장 큰 병목.
+        /// </summary>
+        private sealed class BufferedGrid : DataGridView
         {
-            Panel sw = new Panel();
-            sw.BackColor = color;
-            sw.BorderStyle = BorderStyle.FixedSingle;
-            sw.SetBounds(x, 4, 16, 14);
-            host.Controls.Add(sw);
-            Label lb = new Label();
-            lb.Text = text; lb.AutoSize = true;
-            lb.SetBounds(x + 20, 4, 10, 14);
-            host.Controls.Add(lb);
-            return x + 24 + text.Length * 12 + 12;
+            public BufferedGrid()
+            {
+                DoubleBuffered = true;
+                SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+            }
         }
 
         private DataGridView MakeGrid()
         {
-            DataGridView g = new DataGridView();
+            DataGridView g = new BufferedGrid();
             g.Dock = DockStyle.Fill;
             g.VirtualMode = true;
             g.ReadOnly = true;
@@ -840,6 +924,17 @@ namespace ExcelDiffMerge
             _isPreview = false;
             _pendingLeft.Clear();
             _pendingRight.Clear();
+            // 파일별(한쪽만) 저장 직후 재비교라면, 저장하지 않은 방향의 대기를 복원.
+            if (_pendingRestoreLeft != null)
+            {
+                foreach (KeyValuePair<string, object> kv in _pendingRestoreLeft) _pendingLeft[kv.Key] = kv.Value;
+                _pendingRestoreLeft = null;
+            }
+            if (_pendingRestoreRight != null)
+            {
+                foreach (KeyValuePair<string, object> kv in _pendingRestoreRight) _pendingRight[kv.Key] = kv.Value;
+                _pendingRestoreRight = null;
+            }
             try
             {
                 _diff = DiffEngine.Compare(_leftWb, _rightWb, effMode, _keyCol);
@@ -1007,10 +1102,13 @@ namespace ExcelDiffMerge
         {
             int absRow = isLeft ? dr.LeftRow : dr.RightRow;
             if (absRow < 0) return null;
-            string key = CellKey(_curSheet.Name, absRow, absCol);
+            // 속도: 병합 대기가 하나도 없으면 셀마다 문자열 키를 만들지 않는다(GC 압박 제거).
             Dictionary<string, object> pend = isLeft ? _pendingLeft : _pendingRight;
-            object pv;
-            if (pend.TryGetValue(key, out pv)) return pv;
+            if (pend.Count > 0)
+            {
+                object pv;
+                if (pend.TryGetValue(CellKey(_curSheet.Name, absRow, absCol), out pv)) return pv;
+            }
             SheetData s = isLeft ? _curSheet.Left : _curSheet.Right;
             return s != null ? s.GetValueAbs(absRow, absCol) : null;
         }
@@ -1025,8 +1123,9 @@ namespace ExcelDiffMerge
             int absRow = isLeft ? dr.LeftRow : dr.RightRow;
             if (absRow >= 0)
             {
-                string key = CellKey(_curSheet.Name, absRow, absCol);
-                if ((isLeft ? _pendingLeft : _pendingRight).ContainsKey(key))
+                // 속도: 병합 대기가 있을 때만 셀별 문자열 키 생성·조회(대부분은 대기 0 → 건너뜀).
+                Dictionary<string, object> pend = isLeft ? _pendingLeft : _pendingRight;
+                if (pend.Count > 0 && pend.ContainsKey(CellKey(_curSheet.Name, absRow, absCol)))
                 {
                     e.CellStyle.BackColor = ColMerged; return;
                 }
@@ -1096,7 +1195,15 @@ namespace ExcelDiffMerge
                 DataGridView dst = (src == _gridLeft) ? _gridRight : _gridLeft;
                 MirrorSelection(src, dst);
                 if (src.CurrentCell != null)
-                    UpdateDetail(src.CurrentCell.RowIndex, src.CurrentCell.ColumnIndex);
+                {
+                    int r = src.CurrentCell.RowIndex, c = src.CurrentCell.ColumnIndex;
+                    // 속도: 같은 셀에 대한 중복 SelectionChanged(미러링 연쇄 등)면 상세 재계산 생략.
+                    if (r != _lastDetailRow || c != _lastDetailCol)
+                    {
+                        _lastDetailRow = r; _lastDetailCol = c;
+                        UpdateDetail(r, c);
+                    }
+                }
             }
             catch { }
             finally { _syncing = false; }
@@ -1107,7 +1214,32 @@ namespace ExcelDiffMerge
         {
             if (dst.RowCount == 0 || dst.ColumnCount == 0) return;
 
-            // CurrentCell 을 먼저 세팅(그 뒤 다중 선택이 덮이지 않도록).
+            DataGridViewSelectedCellCollection sel = src.SelectedCells;
+
+            // 빠른 경로: 단일 셀 선택(대부분의 클릭). ClearSelection+루프 없이 현재 셀만 맞춘다.
+            if (sel.Count <= 1)
+            {
+                if (src.CurrentCell != null)
+                {
+                    int cr = src.CurrentCell.RowIndex, cc = src.CurrentCell.ColumnIndex;
+                    if (cr >= 0 && cr < dst.RowCount && cc >= 0 && cc < dst.ColumnCount)
+                    {
+                        try
+                        {
+                            dst.CurrentCell = dst.Rows[cr].Cells[cc];
+                            if (!dst.Rows[cr].Cells[cc].Selected)
+                            {
+                                dst.ClearSelection();
+                                dst.Rows[cr].Cells[cc].Selected = true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                return;
+            }
+
+            // 다중 선택 경로: CurrentCell 을 먼저 세팅(그 뒤 다중 선택이 덮이지 않도록).
             if (src.CurrentCell != null)
             {
                 int cr = src.CurrentCell.RowIndex, cc = src.CurrentCell.ColumnIndex;
@@ -1117,8 +1249,6 @@ namespace ExcelDiffMerge
                     catch { }
                 }
             }
-
-            DataGridViewSelectedCellCollection sel = src.SelectedCells;
             // 성능: 수천 셀 초과 선택 시 전체 미러링은 생략(CurrentCell 만 반영).
             // 병합은 MergeSelected 가 '더 많이 선택된' 그리드를 소스로 쓰므로 정확성은 유지됨.
             if (sel.Count > MirrorCellCap)
@@ -1548,9 +1678,24 @@ namespace ExcelDiffMerge
             UpdateButtonStates();
         }
 
+        /// <summary>툴바 [저장] — 양쪽(대기 있는 방향 모두) 저장(현행 동작).</summary>
         private void SaveMerges()
         {
-            if (_pendingLeft.Count == 0 && _pendingRight.Count == 0)
+            DoSave(true, true);
+        }
+
+        /// <summary>경로 라벨 옆 [이 파일에 저장] — 해당 방향만 저장(U2).</summary>
+        private void SaveMergesSide(bool left)
+        {
+            DoSave(left, !left);
+        }
+
+        /// <summary>지정한 방향(들)의 병합 대기를 원본 파일에 저장. doLeft/doRight 로 대상 선택.</summary>
+        private void DoSave(bool doLeft, bool doRight)
+        {
+            bool saveLeft = doLeft && _pendingLeft.Count > 0;
+            bool saveRight = doRight && _pendingRight.Count > 0;
+            if (!saveLeft && !saveRight)
             {
                 Info("저장할 병합 변경이 없습니다.\r\n\r\n먼저 셀을 선택하고 [왼쪽 > 오른쪽]/[왼쪽 < 오른쪽]으로 병합하거나, 보조 툴바의 [전체병합]을 사용한 뒤 저장하세요.");
                 return;
@@ -1569,8 +1714,8 @@ namespace ExcelDiffMerge
 
             // 어떤 파일이 어디에 저장되는지 명확히 안내.
             List<string> targets = new List<string>();
-            if (_pendingRight.Count > 0) targets.Add("우측 파일 ← " + _rightPath + "   (" + _pendingRight.Count + "셀 변경)");
-            if (_pendingLeft.Count > 0) targets.Add("좌측 파일 ← " + _leftPath + "   (" + _pendingLeft.Count + "셀 변경)");
+            if (saveRight) targets.Add("우측 파일 ← " + _rightPath + "   (" + _pendingRight.Count + "셀 변경)");
+            if (saveLeft) targets.Add("좌측 파일 ← " + _leftPath + "   (" + _pendingLeft.Count + "셀 변경)");
             string msg = "아래 원본 파일을 덮어써 저장합니다:\r\n\r\n · "
                        + string.Join("\r\n · ", targets.ToArray())
                        + "\r\n\r\n[예] 백업 복사본을 만든 뒤 저장\r\n[아니오] 백업 없이 저장\r\n[취소] 저장 안 함"
@@ -1580,25 +1725,25 @@ namespace ExcelDiffMerge
             bool backup = (dr == DialogResult.Yes);
 
             Logger.Info(string.Format("저장 시작 (좌 {0}, 우 {1}, 백업={2})",
-                _pendingLeft.Count, _pendingRight.Count, backup));
+                saveLeft ? _pendingLeft.Count : 0, saveRight ? _pendingRight.Count : 0, backup));
 
             bool ok = false;
             List<string> saved = new List<string>();
             try
             {
                 SetBusy(true);
-                if (_pendingRight.Count > 0)
+                if (saveRight)
                 {
                     string bp = SaveOneSide(_rightPath, _pendingRight, backup);
                     saved.Add("우: " + _rightPath + (bp != null ? "\r\n     (백업: " + bp + ")" : ""));
                 }
-                if (_pendingLeft.Count > 0)
+                if (saveLeft)
                 {
                     string bp = SaveOneSide(_leftPath, _pendingLeft, backup);
                     saved.Add("좌: " + _leftPath + (bp != null ? "\r\n     (백업: " + bp + ")" : ""));
                 }
-                _pendingLeft.Clear();
-                _pendingRight.Clear();
+                if (saveLeft) _pendingLeft.Clear();
+                if (saveRight) _pendingRight.Clear();
                 Logger.Info("저장 완료: " + string.Join(" | ", saved.ToArray()));
                 ok = true;
             }
@@ -1623,6 +1768,12 @@ namespace ExcelDiffMerge
 
             if (ok)
             {
+                // 부분 저장(한쪽만)이면 저장하지 않은 방향의 대기를 재비교 후에도 유지(데이터 유실 방지).
+                _pendingRestoreLeft = (!saveLeft && _pendingLeft.Count > 0)
+                    ? new Dictionary<string, object>(_pendingLeft) : null;
+                _pendingRestoreRight = (!saveRight && _pendingRight.Count > 0)
+                    ? new Dictionary<string, object>(_pendingRight) : null;
+
                 _lblSummary.Text = "저장 완료 — 최신 내용으로 다시 불러오는 중…";
                 MessageBox.Show(this,
                     "저장이 완료되었습니다:\r\n\r\n" + string.Join("\r\n", saved.ToArray())

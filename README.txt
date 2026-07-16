@@ -1,5 +1,5 @@
 ====================================================================
- ExcelDiffMerge — 엑셀 Diff/Merge 툴 (WinMerge 식)   v1.7.0
+ ExcelDiffMerge — 엑셀 Diff/Merge 툴 (WinMerge 식)   v1.8.0
  폐쇄망 + 소프트캠프 DRM 환경 / C# WinForms + Excel COM late binding
  (버전 이력은 CHANGELOG.md 참고)
 ====================================================================
