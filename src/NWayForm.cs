@@ -12,7 +12,7 @@ namespace ExcelDiffMerge
     ///  - base 를 왼쪽에 고정, 오른쪽에는 선택한 버전 1개를 표시하는 2-way 좌우 비교 화면.
     ///  - 버전을 전환하며 하나씩 검토하고, 채택한 값은 base(왼쪽)에 누적, 마지막에 base 파일에 한 번에 저장.
     ///  - pairwise diff(base vs 각 버전)는 DiffEngine/RowAligner 로 비교 시 1회씩 계산해 캐시(버전 전환 시 재계산 없음).
-    ///  - 충돌(여러 버전이 같은 셀을 다르게 변경) 좌표는 NWayDiffEngine.Compare 결과로 구해 주황 강조.
+    ///  - 충돌(여러 버전이 같은 셀을 다르게 변경) 좌표는 캐시된 pairwise LCS diff 에서 직접 계산해 주황 강조.
     ///  - 그리드는 가상모드(VirtualMode) + 더블버퍼링 서브클래스(MainForm 패턴 자체 재구현).
     /// </summary>
     public sealed class NWayForm : Form
@@ -51,9 +51,10 @@ namespace ExcelDiffMerge
         private readonly List<string> _versionPaths = new List<string>();
 
         private List<DiffResult> _versionDiffs = new List<DiffResult>(); // base vs 각 버전(캐시)
-        private NWayResult _nway;                                        // 충돌 좌표용
-        private readonly Dictionary<string, NWayCell> _conflictCells =   // "sheet:baseRow:col" → 충돌 셀
-            new Dictionary<string, NWayCell>();
+        // 충돌 인덱스: 캐시된 pairwise LCS diff(_versionDiffs)에서 직접 계산.
+        // "sheet:baseRow:col"(base 절대좌표) → 충돌 정보.
+        private readonly Dictionary<string, ConflictInfo> _conflictCells =
+            new Dictionary<string, ConflictInfo>();
 
         private int _curVersion = -1;
         private string _curSheetName;
@@ -74,6 +75,16 @@ namespace ExcelDiffMerge
         private bool _syncing;
         private bool _busy;
         private int _navIndex = -1;
+
+        /// <summary>
+        /// 한 base 셀에 여러 버전이 기록한 (버전 인덱스, 버전값) 누적.
+        /// 2개 이상 버전이 서로 다른 값으로 변경했을 때만 충돌로 취급(툴팁·강조용).
+        /// </summary>
+        private sealed class ConflictInfo
+        {
+            public readonly List<int> Versions = new List<int>();
+            public readonly List<object> Values = new List<object>();
+        }
 
         /// <summary>채택된 값 한 개 + 어느 버전에서 채택했는지(교체 확인용).</summary>
         private sealed class AdoptEntry
@@ -97,7 +108,6 @@ namespace ExcelDiffMerge
             public WorkbookData Base;
             public List<WorkbookData> Versions;
             public List<DiffResult> Diffs;
-            public NWayResult Nway;
         }
 
         /// <summary>더블버퍼링 DataGridView(MainForm.BufferedGrid 와 동일 패턴을 여기 자체 정의).</summary>
@@ -451,11 +461,11 @@ namespace ExcelDiffMerge
                     foreach (WorkbookData v in versions)
                         diffs.Add(DiffEngine.Compare(baseWb, v, AlignMode.Auto, -1));
 
-                    // 충돌 좌표는 NWayDiffEngine 로(수정 금지, 그대로 호출).
-                    NWayResult nw = NWayDiffEngine.Compare(baseWb, versions);
-
+                    // 충돌 인덱스는 위 pairwise diff(diffs, LCS 정렬)에서 UI 스레드가 직접 계산한다.
+                    // 별도 NWayDiffEngine.Compare(순수 좌표 비교)는 좌표 어긋남으로 가짜/누락 충돌을
+                    // 유발하므로 호출하지 않는다(비교 속도도 회수).
                     CompareData cd = new CompareData();
-                    cd.Base = baseWb; cd.Versions = versions; cd.Diffs = diffs; cd.Nway = nw;
+                    cd.Base = baseWb; cd.Versions = versions; cd.Diffs = diffs;
                     return cd;
                 },
                 delegate(CompareData cd, Exception err)
@@ -493,7 +503,6 @@ namespace ExcelDiffMerge
             }
 
             _versionDiffs = cd.Diffs;
-            _nway = cd.Nway;
 
             // 새 비교 → 채택/언두 초기화.
             _adopt.Clear();
@@ -514,14 +523,60 @@ namespace ExcelDiffMerge
             if (_cboVersion.Items.Count > 0) _cboVersion.SelectedIndex = 0; // → OnVersionChanged
         }
 
+        // 캐시된 pairwise LCS diff(_versionDiffs)에서 충돌 인덱스를 직접 계산한다.
+        //  - 각 버전 v 의 diff 에서, LCS 로 짝지어진 행(LeftRow>=0 && RightRow>=0)의 변경 셀만 대상.
+        //  - base 절대좌표 키("sheet:baseRow:col")에 (버전 인덱스, 버전값)을 누적.
+        //  - 같은 키에 2개 이상 버전이 기록되고 그 값들이 서로 전부 같지는 않을 때만 충돌.
+        //    (여러 버전이 동일하게 수정한 경우는 충돌 아님.)
+        //  - 행 삽입/삭제 행(Added/Deleted)은 base 좌표가 없으므로 제외 → 현행 채택 차단과 일관.
         private void BuildConflictIndex()
         {
             _conflictCells.Clear();
-            if (_nway == null) return;
-            foreach (NWaySheetDiff s in _nway.Sheets)
-                foreach (NWayCell c in s.Cells)
-                    if (c.Conflict)
-                        _conflictCells[CellKey(s.Name, c.Row, c.Col)] = c;
+
+            // 1) base 절대좌표별로 (버전, 값) 누적.
+            Dictionary<string, ConflictInfo> acc = new Dictionary<string, ConflictInfo>();
+            for (int vi = 0; vi < _versionDiffs.Count; vi++)
+            {
+                DiffResult d = _versionDiffs[vi];
+                foreach (SheetDiff sd in d.Sheets)
+                {
+                    // base 에 없는 시트는 채택/저장 불가 → 충돌 대상 아님.
+                    if (sd.Left == null) continue;
+                    foreach (DiffRow dr in sd.Rows)
+                    {
+                        // 짝지어진 행만(행 삽입/삭제 제외).
+                        if (dr.LeftRow < 0 || dr.RightRow < 0 || dr.Changes == null) continue;
+                        foreach (KeyValuePair<int, CellStatus> ch in dr.Changes)
+                        {
+                            // 변경 셀(base 값과 버전 값이 다름)만 누적 — Same 은 Changes 에 없음.
+                            int absCol = ch.Key;
+                            object vv = sd.Right != null ? sd.Right.GetValueAbs(dr.RightRow, absCol) : null;
+                            string key = CellKey(sd.Name, dr.LeftRow, absCol);
+                            ConflictInfo ci;
+                            if (!acc.TryGetValue(key, out ci)) { ci = new ConflictInfo(); acc[key] = ci; }
+                            ci.Versions.Add(vi);
+                            ci.Values.Add(vv);
+                        }
+                    }
+                }
+            }
+
+            // 2) 2개 이상 버전 + 값이 서로 전부 같지는 않은 셀만 충돌로 확정.
+            foreach (KeyValuePair<string, ConflictInfo> kv in acc)
+            {
+                ConflictInfo ci = kv.Value;
+                if (ci.Versions.Count < 2) continue;
+                if (AllValuesEqual(ci.Values)) continue; // 여러 버전이 동일하게 수정 → 충돌 아님
+                _conflictCells[kv.Key] = ci;
+            }
+        }
+
+        /// <summary>값 목록이 모두 서로 같은지(쌍별 ValueEquals).</summary>
+        private static bool AllValuesEqual(List<object> values)
+        {
+            for (int i = 1; i < values.Count; i++)
+                if (!DiffEngine.ValueEquals(values[0], values[i])) return false;
+            return true;
         }
 
         private void PopulateVersionCombo()
@@ -553,13 +608,10 @@ namespace ExcelDiffMerge
         private void BuildTabs()
         {
             _tabs.TabPages.Clear();
-            // 시트 union(base + 모든 버전). N-way 결과의 시트 순서를 사용.
+            // 시트 union(base + 모든 버전). 캐시된 pairwise diff 순서를 사용
+            // (각 diff 는 base 시트 먼저, 그다음 버전 전용 시트 순).
             List<string> names = new List<string>();
             HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (_nway != null)
-                foreach (NWaySheetDiff s in _nway.Sheets)
-                    if (seen.Add(s.Name)) names.Add(s.Name);
-            // 안전망: 혹시 빠진 시트가 있으면 diff 에서 보충.
             foreach (DiffResult d in _versionDiffs)
                 foreach (SheetDiff sd in d.Sheets)
                     if (seen.Add(sd.Name)) names.Add(sd.Name);
@@ -737,16 +789,21 @@ namespace ExcelDiffMerge
             DiffRow dr = _curSheet.Rows[_rowMap[e.RowIndex]];
             if (dr.LeftRow < 0) return;
             int absCol = _colStart + e.ColumnIndex;
-            NWayCell nc;
-            if (_conflictCells.TryGetValue(CellKey(_curSheetName, dr.LeftRow, absCol), out nc))
-                e.ToolTipText = BuildConflictTip(nc);
+            ConflictInfo ci;
+            if (_conflictCells.TryGetValue(CellKey(_curSheetName, dr.LeftRow, absCol), out ci))
+            {
+                // base 값은 좌표로 직접 조회(pairwise 대응과 일치).
+                object baseVal = _curSheet.Left != null ? _curSheet.Left.GetValueAbs(dr.LeftRow, absCol) : null;
+                e.ToolTipText = BuildConflictTip(ci, baseVal);
+            }
         }
 
-        private string BuildConflictTip(NWayCell nc)
+        private string BuildConflictTip(ConflictInfo ci, object baseVal)
         {
-            string s = "여러 버전이 이 셀을 다르게 변경했습니다.\r\nbase: " + DiffEngine.ToText(nc.BaseValue);
-            foreach (KeyValuePair<int, object> kv in nc.Changes)
-                s += "\r\nv" + (kv.Key + 1) + ": " + DiffEngine.ToText(kv.Value);
+            // pairwise 기준으로 각 버전이 이 셀을 어떻게 바꿨는지 표시.
+            string s = "여러 버전이 이 셀을 다르게 변경했습니다.\r\nbase: " + DiffEngine.ToText(baseVal);
+            for (int i = 0; i < ci.Versions.Count; i++)
+                s += "\r\nv" + (ci.Versions[i] + 1) + ": " + DiffEngine.ToText(ci.Values[i]);
             s += "\r\n→ 다른 버전도 확인 후 채택하세요.";
             return s;
         }
@@ -1003,7 +1060,7 @@ namespace ExcelDiffMerge
         {
             if (_curDiff == null) { UpdateSaveButton(); return; }
             int curChanges = _curDiff.TotalChanged + _curDiff.TotalAdded + _curDiff.TotalDeleted;
-            int conflicts = _nway != null ? _nway.TotalConflict : 0;
+            int conflicts = _conflictCells.Count;
             _lblSummary.Text = string.Format("v{0} 검토 중 — 변경 {1}건, 채택 대기 {2}건, 충돌 {3}건",
                 _curVersion + 1, curChanges, _adopt.Count, conflicts);
             UpdateSaveButton();
