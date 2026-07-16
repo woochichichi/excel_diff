@@ -67,6 +67,7 @@ namespace ExcelDiffMerge
         private int _ctxRow = -1;
         private int _ctxCol = -1;
         private float _gridFontSize = 9f;
+        private Font _gridFont;                       // 현재 그리드 폰트(교체 시 이전 것 Dispose)
 
         // 상태
         private string _leftPath;
@@ -1729,8 +1730,11 @@ namespace ExcelDiffMerge
             _gridFontSize = size;
             Font f = new Font(FontFamily.GenericSansSerif, size);
             int h = (int)Math.Ceiling(size * 1.7f) + 8;
+            Font old = _gridFont;                     // 반복 조절 시 GDI HFONT 누적 방지
             ApplyGridFontOne(_gridLeft, f, h);
             ApplyGridFontOne(_gridRight, f, h);
+            _gridFont = f;
+            if (old != null) old.Dispose();
             _settings.GridFontSize = size;   // 저장은 종료 시(SaveWindow)
         }
 
