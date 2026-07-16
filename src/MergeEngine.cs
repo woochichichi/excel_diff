@@ -36,6 +36,7 @@ namespace ExcelDiffMerge
         private const int msoAutomationSecurityForceDisable = 3;
 
         private dynamic _xl;
+        private int _pid;
 
         public MergeEngine()
         {
@@ -49,6 +50,7 @@ namespace ExcelDiffMerge
             try { _xl.ScreenUpdating = false; } catch { }
             try { _xl.EnableEvents = false; } catch { }
             try { _xl.Calculation = xlCalculationManual; } catch { }
+            _pid = ComProcessGuard.TryGetPid(_xl);
         }
 
         /// <summary>
@@ -216,6 +218,7 @@ namespace ExcelDiffMerge
             GC.WaitForPendingFinalizers();
             GC.Collect();
             GC.WaitForPendingFinalizers();
+            ComProcessGuard.KillIfAlive(_pid, "EXCEL");
         }
     }
 }

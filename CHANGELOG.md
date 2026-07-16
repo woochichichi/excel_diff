@@ -5,6 +5,19 @@
 
 ---
 
+## [1.6.1] - 2026-07-16
+
+Windows/COM 하드닝.
+
+### 수정·강화 (Hardened)
+- **좀비 프로세스 방지 최후 안전망**(`ComProcessGuard`): 우리가 만든 Excel/Word 인스턴스의
+  PID 를 Application.Hwnd 로 확보해 두고, Quit+Release+GC 후에도 살아있으면 **그 PID 만**
+  강제 종료. 프로세스 이름(EXCEL/WINWORD) 일치 시에만 종료해 사용자가 열어둔 Office 는
+  건드리지 않음. (Excel 지원, Word 는 Hwnd 미제공이라 Quit+GC 로 처리)
+- **COM 누수 감소**: `UsedRange.Rows/.Columns` 를 지역변수로 받아 즉시 해제(two-dot 체인 회피).
+- **CSV 인코딩 자동 판별**(한국 Windows): BOM(UTF-8/UTF-16) 우선, 없으면 UTF-8 유효성 검사 후
+  실패 시 시스템 기본(CP949)로 읽음. 엑셀 저장 한글 CSV(CP949) 가 깨지지 않도록.
+
 ## [1.6.0] - 2026-07-16
 
 전체 병합 + 버튼 라벨 최종 정리.

@@ -21,6 +21,7 @@ namespace ExcelDiffMerge
 
         private dynamic _wd;
         private int _savedAutomationSecurity = msoAutomationSecurityLow;
+        private int _pid;
 
         public WordComReader()
         {
@@ -33,6 +34,7 @@ namespace ExcelDiffMerge
             try { _wd.DisplayAlerts = wdAlertsNone; } catch { }
             try { _savedAutomationSecurity = (int)_wd.AutomationSecurity; } catch { }
             try { _wd.AutomationSecurity = msoAutomationSecurityForceDisable; } catch { }
+            _pid = ComProcessGuard.TryGetPid(_wd); // Word 는 Application.Hwnd 미제공 → 0(무해)
             try { Logger.Info("Word COM 인스턴스 생성. Version=" + (string)_wd.Version); }
             catch { Logger.Info("Word COM 인스턴스 생성(버전 조회 실패)"); }
         }
@@ -144,6 +146,7 @@ namespace ExcelDiffMerge
             GC.WaitForPendingFinalizers();
             GC.Collect();
             GC.WaitForPendingFinalizers();
+            ComProcessGuard.KillIfAlive(_pid, "WINWORD");
             Logger.Info("Word COM 인스턴스 정리 완료(Quit+Release+GC)");
         }
     }

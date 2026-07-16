@@ -27,6 +27,7 @@ namespace ExcelDiffMerge
         private int _savedCalculation = xlCalculationAutomatic;
         private int _savedAutomationSecurity = msoAutomationSecurityLow;
         private bool _optionsApplied;
+        private int _pid;                 // 우리 Excel 인스턴스 PID(좀비 방지용)
 
         public ExcelComReader()
         {
@@ -43,8 +44,9 @@ namespace ExcelDiffMerge
             // 매크로 자동실행 차단 (spec §7). AutomationSecurity 는 프로세스 전역이라 원복 대비 저장.
             try { _savedAutomationSecurity = (int)_xl.AutomationSecurity; } catch { }
             try { _xl.AutomationSecurity = msoAutomationSecurityForceDisable; } catch { }
-            try { Logger.Info("Excel COM 인스턴스 생성. Version=" + (string)_xl.Version); }
-            catch { Logger.Info("Excel COM 인스턴스 생성(버전 조회 실패)"); }
+            _pid = ComProcessGuard.TryGetPid(_xl);
+            try { Logger.Info("Excel COM 인스턴스 생성. Version=" + (string)_xl.Version + " pid=" + _pid); }
+            catch { Logger.Info("Excel COM 인스턴스 생성(버전 조회 실패) pid=" + _pid); }
         }
 
         /// <summary>열기 직후 성능 최적화 옵션 적용 (spec §4-3). 작업 끝나면 RestoreExcelOptions 로 원복.</summary>
@@ -145,8 +147,13 @@ namespace ExcelDiffMerge
 
                 int firstRow = (int)used.Row;
                 int firstCol = (int)used.Column;
-                int rowCount = (int)used.Rows.Count;
-                int colCount = (int)used.Columns.Count;
+                // two-dot 체인 회피: Rows/Columns 를 지역변수로 받아 해제(COM 누수 최소화).
+                dynamic usedRows = used.Rows;
+                dynamic usedCols = used.Columns;
+                int rowCount = (int)usedRows.Count;
+                int colCount = (int)usedCols.Count;
+                Release(ref usedRows);
+                Release(ref usedCols);
 
                 if (rowCount <= 0 || colCount <= 0) return sd;
 
@@ -288,6 +295,8 @@ namespace ExcelDiffMerge
             GC.WaitForPendingFinalizers();
             GC.Collect();
             GC.WaitForPendingFinalizers();
+            // 최후 안전망: Quit 후에도 남아있으면 우리 PID 만 강제 종료.
+            ComProcessGuard.KillIfAlive(_pid, "EXCEL");
             Logger.Info("Excel COM 인스턴스 정리 완료(Quit+Release+GC)");
         }
     }
