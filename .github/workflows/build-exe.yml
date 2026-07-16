@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - claude/md-file-development-hsbp88
+      - claude/ux-gui-improvements-6hlarb
     paths:
       - 'src/**'
       - 'build.bat'
