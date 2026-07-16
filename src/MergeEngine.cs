@@ -75,7 +75,9 @@ namespace ExcelDiffMerge
 
                 if ((bool)wb.ReadOnly)
                     throw new InvalidOperationException(
-                        "대상 파일이 읽기 전용으로 열렸습니다(DRM 편집권한 없음/파일 잠김 가능). 저장할 수 없습니다.");
+                        "대상 파일이 읽기 전용으로 열렸습니다. 저장할 수 없습니다.\r\n"
+                        + "→ 원본이 Excel에서 열려 있으면 닫고 다시 시도하세요. "
+                        + "(또는 DRM 편집권한이 없는 파일일 수 있습니다.)");
 
                 // 시트별로 묶어서 셀 쓰기.
                 Dictionary<string, List<MergeItem>> bySheet = GroupBySheet(items);

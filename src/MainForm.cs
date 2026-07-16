@@ -33,8 +33,12 @@ namespace ExcelDiffMerge
         private ToolStripButton _btnMergeLR;
         private ToolStripButton _btnMergeRL;
         private ToolStripButton _btnSave;
+        private ToolStripButton _btnChangeList;
         private ToolStripComboBox _cboAlign;
         private ToolStripTextBox _txtKeyCol;
+        private Panel _changePanel;
+        private ListView _changeList;
+        private Label _changeHeader;
         private DataGridView _gridLeft;
         private DataGridView _gridRight;
         private MarkerBar _marker;
@@ -111,14 +115,16 @@ namespace ExcelDiffMerge
             primary.Items.Add(BigBtn("우측 열기", "비교 대상(오른쪽) 파일 열기", delegate { OpenFile(false); }, false));
             primary.Items.Add(BigBtn("비교", "두 파일을 비교 (가장 중요)", delegate { StartCompareExcel(); }, true));
             primary.Items.Add(new ToolStripSeparator());
-            _btnPrev = BigBtn("◀ 이전", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
-            _btnNext = BigBtn("다음 ▶", "다음 차이로 이동 (F7)", delegate { NavigateDiff(1); }, false);
+            // 차이 이동은 화살표(직관적) 유지.
+            _btnPrev = BigBtn("◀ 이전차이", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
+            _btnNext = BigBtn("다음차이 ▶", "다음 차이로 이동 (F7)", delegate { NavigateDiff(1); }, false);
             primary.Items.Add(_btnPrev);
             primary.Items.Add(_btnNext);
             primary.Items.Add(new ToolStripSeparator());
-            _btnMergeLR = BigBtn("좌→우", "선택 셀을 왼쪽 값으로 오른쪽에 반영(병합)", delegate { MergeSelected(true); }, false);
-            _btnMergeRL = BigBtn("우→좌", "선택 셀을 오른쪽 값으로 왼쪽에 반영(병합)", delegate { MergeSelected(false); }, false);
-            _btnSave = BigBtn("저장", "병합 결과 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
+            // 병합은 화살표 대신 '말'로(차이 이동 화살표와 헷갈리지 않게).
+            _btnMergeLR = BigBtn("왼쪽값을 오른쪽에", "선택한 셀을 왼쪽(좌) 값으로 오른쪽(우)에 덮어쓰기(병합 대기)", delegate { MergeSelected(true); }, false);
+            _btnMergeRL = BigBtn("오른쪽값을 왼쪽에", "선택한 셀을 오른쪽(우) 값으로 왼쪽(좌)에 덮어쓰기(병합 대기)", delegate { MergeSelected(false); }, false);
+            _btnSave = BigBtn("저장", "병합 결과를 원본 파일에 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
             primary.Items.Add(_btnMergeLR);
             primary.Items.Add(_btnMergeRL);
             primary.Items.Add(_btnSave);
@@ -150,8 +156,14 @@ namespace ExcelDiffMerge
             _btnChangesOnly.ToolTipText = "변경/추가/삭제 행만 표시(동일 행 접기)";
             _btnChangesOnly.CheckedChanged += delegate { _changesOnly = _btnChangesOnly.Checked; RefreshGridRows(); };
             secondary.Items.Add(_btnChangesOnly);
+            _btnChangeList = new ToolStripButton("변경목록 ▤");
+            _btnChangeList.CheckOnClick = true;
+            _btnChangeList.Checked = true;
+            _btnChangeList.ToolTipText = "우측 변경목록 패널 표시/숨기기 (클릭 시 해당 셀로 이동)";
+            _btnChangeList.CheckedChanged += delegate { if (_changePanel != null) _changePanel.Visible = _btnChangeList.Checked; };
+            secondary.Items.Add(_btnChangeList);
             secondary.Items.Add(new ToolStripSeparator());
-            secondary.Items.Add(SmallBtn("N-way…", "여러 버전 취합 비교", delegate { OpenNWayDialog(); }));
+            secondary.Items.Add(SmallBtn("N-way 취합…", "여러 버전(3개 이상) 취합 비교 — 사용법 안내 포함", delegate { OpenNWayDialog(); }));
             secondary.Items.Add(SmallBtn("CSV폴더비교(테스트)", "Excel 없이 CSV 폴더 2개 비교", delegate { StartCompareCsv(); }));
             secondary.Items.Add(SmallBtn("로그 열기", "로그 파일 위치 보기", delegate { ShowLogPath(); }));
 
@@ -189,11 +201,15 @@ namespace ExcelDiffMerge
 
             _marker = new MarkerBar();
             _marker.Dock = DockStyle.Right;
+            _marker.Width = 20; // 더 잘 보이게
             _marker.OnSeek = delegate(float pos) { SeekTo(pos); };
             split.Panel2.Controls.Add(_gridRight);
             split.Panel2.Controls.Add(_marker);
 
             Load += delegate { try { split.SplitterDistance = split.Width / 2; } catch { } };
+
+            // ----- 변경 목록 패널(우측): 클릭하면 해당 셀로 점프
+            _changePanel = BuildChangePanel();
 
             // ----- 셀 상세 패널
             Panel detailPanel = new Panel();
@@ -215,8 +231,9 @@ namespace ExcelDiffMerge
             status.Items.Add(_lblSummary);
             status.Items.Add(_progress);
 
-            // 도킹 z-order: Fill 먼저, 안쪽→바깥쪽 Top, 마지막에 Bottom.
+            // 도킹 z-order: Fill 먼저, 그 다음 Right(중앙밴드), 이어서 Top(안쪽→바깥쪽), 끝에 Bottom.
             Controls.Add(split);        // Fill
+            Controls.Add(_changePanel); // Right (그리드 오른쪽, 변경목록)
             Controls.Add(pathPanel);    // Top
             Controls.Add(_tabs);        // Top
             Controls.Add(legend);       // Top
@@ -229,6 +246,112 @@ namespace ExcelDiffMerge
             UpdateButtonStates();
             RestoreWindow();
             FormClosing += delegate { SaveWindow(); };
+        }
+
+        // ===== 변경 목록 패널 =====
+        private Panel BuildChangePanel()
+        {
+            Panel p = new Panel();
+            p.Dock = DockStyle.Right;
+            p.Width = 340;
+
+            _changeHeader = new Label();
+            _changeHeader.Dock = DockStyle.Top;
+            _changeHeader.Height = 22;
+            _changeHeader.TextAlign = ContentAlignment.MiddleLeft;
+            _changeHeader.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+            _changeHeader.Text = "변경 목록 (비교 후 표시)";
+
+            _changeList = new ListView();
+            _changeList.Dock = DockStyle.Fill;
+            _changeList.View = View.Details;
+            _changeList.FullRowSelect = true;
+            _changeList.MultiSelect = false;
+            _changeList.HideSelection = false;
+            _changeList.Columns.Add("시트", 70);
+            _changeList.Columns.Add("위치", 55);
+            _changeList.Columns.Add("종류", 45);
+            _changeList.Columns.Add("좌 → 우", 150);
+            _changeList.ItemActivate += delegate { JumpToSelectedChange(); };
+            _changeList.Click += delegate { JumpToSelectedChange(); };
+
+            p.Controls.Add(_changeList);
+            p.Controls.Add(_changeHeader);
+            return p;
+        }
+
+        private void PopulateChangeList()
+        {
+            if (_changeList == null) return;
+            _changeList.BeginUpdate();
+            _changeList.Items.Clear();
+            int total = 0;
+            if (_diff != null && !_isPreview)
+            {
+                const int cap = 5000;
+                bool capped = false;
+                foreach (SheetDiff sd in _diff.Sheets)
+                {
+                    if (capped) break;
+                    foreach (DiffNav nv in sd.Nav)
+                    {
+                        if (total >= cap) { capped = true; break; }
+                        DiffRow dr = sd.Rows[nv.RowIndex];
+                        CellStatus st = dr.StatusAt(nv.Col);
+                        object lv = dr.LeftRow >= 0 && sd.Left != null ? sd.Left.GetValueAbs(dr.LeftRow, nv.Col) : null;
+                        object rv = dr.RightRow >= 0 && sd.Right != null ? sd.Right.GetValueAbs(dr.RightRow, nv.Col) : null;
+                        int rowNo = dr.LeftRow >= 0 ? dr.LeftRow : dr.RightRow;
+
+                        ListViewItem it = new ListViewItem(sd.Name);
+                        it.SubItems.Add(ColLetter(nv.Col) + rowNo);
+                        it.SubItems.Add(KindLabel(st));
+                        it.SubItems.Add(ShortCell(lv) + " → " + ShortCell(rv));
+                        it.Tag = new object[] { sd, nv };
+                        switch (st)
+                        {
+                            case CellStatus.Changed: it.BackColor = ColChanged; break;
+                            case CellStatus.Added: it.BackColor = ColAdded; break;
+                            case CellStatus.Deleted: it.BackColor = ColDeleted; break;
+                        }
+                        _changeList.Items.Add(it);
+                        total++;
+                    }
+                }
+                _changeHeader.Text = capped ? ("변경 목록 (" + total + "+ , 상한)") : ("변경 목록 (" + total + "건) — 클릭 시 이동");
+            }
+            else
+            {
+                _changeHeader.Text = "변경 목록 (비교 후 표시)";
+            }
+            _changeList.EndUpdate();
+        }
+
+        private static string ShortCell(object v)
+        {
+            string s = DiffEngine.ToText(v);
+            if (s.Length == 0) return "(빈칸)";
+            return s.Length > 24 ? s.Substring(0, 24) + "…" : s;
+        }
+
+        private void JumpToSelectedChange()
+        {
+            if (_changeList.SelectedItems.Count == 0) return;
+            object[] tag = _changeList.SelectedItems[0].Tag as object[];
+            if (tag == null) return;
+            SheetDiff sd = (SheetDiff)tag[0];
+            DiffNav nv = (DiffNav)tag[1];
+
+            // 해당 시트 탭 선택.
+            for (int i = 0; i < _tabs.TabPages.Count; i++)
+            {
+                if (_tabs.TabPages[i].Tag == sd)
+                {
+                    if (_tabs.SelectedIndex != i) _tabs.SelectedIndex = i; // OnSheetChanged 호출됨
+                    break;
+                }
+            }
+            // 셀 선택/스크롤.
+            SelectCell(nv);
         }
 
         private ToolStripButton BigBtn(string text, string tip, EventHandler h, bool emphasize)
@@ -411,6 +534,7 @@ namespace ExcelDiffMerge
             _isPreview = true;
             _diff = BuildPreviewResult(_leftWb, _rightWb);
             PopulateTabs();
+            PopulateChangeList();
             string ls = _leftWb != null ? Path.GetFileName(_leftWb.FilePath) : "(없음)";
             string rs = _rightWb != null ? Path.GetFileName(_rightWb.FilePath) : "(없음)";
             _lblSummary.Text = "미리보기 — 좌:" + ls + "  우:" + rs + "   [비교]를 누르면 차이를 표시합니다.";
@@ -474,12 +598,23 @@ namespace ExcelDiffMerge
 
         private void StartCompareCsv()
         {
-            string l = PickFolder("좌측 CSV 폴더(각 .csv = 시트)");
+            DialogResult ok = MessageBox.Show(this,
+                "CSV 폴더 비교 (개발/테스트용 — Excel 없이 동작)\r\n\r\n"
+                + "· 비교할 CSV 파일들을 담은 폴더를 좌/우 각각 고릅니다.\r\n"
+                + "· 폴더 안의 .csv 파일 1개 = 시트 1개로 취급합니다.\r\n"
+                + "   예) old\\Sheet1.csv, old\\Sheet2.csv  ↔  new\\Sheet1.csv, new\\Sheet2.csv\r\n"
+                + "· 실제 Excel/DRM 파일 비교는 [좌측 열기]/[우측 열기]를 쓰세요.\r\n\r\n"
+                + "계속하시겠어요?",
+                "CSV 폴더 비교", MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+            if (ok != DialogResult.OK) return;
+
+            string l = PickFolder("좌측 CSV 폴더 선택 (각 .csv = 시트)");
             if (l == null) return;
-            string r = PickFolder("우측 CSV 폴더");
+            string r = PickFolder("우측 CSV 폴더 선택");
             if (r == null) return;
             _leftPath = l; _rightPath = r;
             _lblLeftPath.Text = l; _lblRightPath.Text = r;
+            _leftWb = null; _rightWb = null; // 폴더 비교는 캐시 무효화 후 로드
             LoadAndCompare(true);
         }
 
@@ -567,6 +702,7 @@ namespace ExcelDiffMerge
                 return;
             }
             PopulateTabs();
+            PopulateChangeList();
             _lblSummary.Text = _diff.Summary() + "  [" + AlignName() + "]";
             Logger.Info("비교 결과: " + _diff.Summary() + " [" + AlignName() + "]");
             UpdateButtonStates();
@@ -911,20 +1047,24 @@ namespace ExcelDiffMerge
             _navIndex += dir;
             if (_navIndex < 0) _navIndex = _curSheet.Nav.Count - 1;
             if (_navIndex >= _curSheet.Nav.Count) _navIndex = 0;
+            SelectCell(_curSheet.Nav[_navIndex]);
+        }
 
-            DiffNav nv = _curSheet.Nav[_navIndex];
+        /// <summary>주어진 차이(Nav) 셀을 좌/우 그리드에서 선택하고 화면에 보이게 스크롤.</summary>
+        private void SelectCell(DiffNav nv)
+        {
+            if (_curSheet == null) return;
             int displayRow;
             if (!_rowsIdxToDisplay.TryGetValue(nv.RowIndex, out displayRow))
             {
-                // "변경만 보기" 꺼짐 상태에서만 매핑 실패 가능 — 필터 끄고 재시도.
+                // "변경만 보기" 상태 등으로 매핑 실패 시 필터를 끄고 재시도.
                 if (_changesOnly)
                 {
                     _btnChangesOnly.Checked = false;
                     _changesOnly = false;
                     RefreshGridRows();
-                    if (!_rowsIdxToDisplay.TryGetValue(nv.RowIndex, out displayRow)) return;
                 }
-                else return;
+                if (!_rowsIdxToDisplay.TryGetValue(nv.RowIndex, out displayRow)) return;
             }
             int displayCol = nv.Col - _colStart;
             if (displayCol < 0 || displayCol >= _colCount) return;
@@ -934,6 +1074,9 @@ namespace ExcelDiffMerge
                 _gridLeft.FirstDisplayedScrollingRowIndex = Math.Max(0, displayRow - 3);
             }
             catch { }
+            // 네비 인덱스를 이 셀에 맞춰 동기화(F7/F8 이 이어지도록).
+            int idx = _curSheet.Nav.FindIndex(delegate(DiffNav x) { return x.RowIndex == nv.RowIndex && x.Col == nv.Col; });
+            if (idx >= 0) _navIndex = idx;
             _lblSummary.Text = string.Format("{0}  |  차이 {1}/{2}  ({3}열, 좌{4}/우{5}행)",
                 _diff.Summary(), _navIndex + 1, _curSheet.Nav.Count, ColLetter(nv.Col),
                 RowLabel(true, nv.RowIndex), RowLabel(false, nv.RowIndex));
@@ -988,33 +1131,59 @@ namespace ExcelDiffMerge
         {
             if (_pendingLeft.Count == 0 && _pendingRight.Count == 0)
             {
-                Info("저장할 병합 변경이 없습니다."); return;
+                Info("저장할 병합 변경이 없습니다.\r\n\r\n먼저 셀을 선택하고 [왼쪽값을 오른쪽에]/[오른쪽값을 왼쪽에]로 병합한 뒤 저장하세요.");
+                return;
             }
             if (IsCsvSession())
             {
-                Info("CSV 테스트 세션은 저장을 지원하지 않습니다(실제 Excel 파일에서만 병합 저장)."); return;
+                Info("CSV 테스트 세션은 저장을 지원하지 않습니다(실제 Excel 파일에서만 병합 저장).");
+                return;
             }
-            bool backup = MessageBox.Show(this, "원본 저장 전 백업 복사본을 만들까요? (권장: 예)",
-                "백업", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+
+            // 어떤 파일이 어디에 저장되는지 명확히 안내.
+            List<string> targets = new List<string>();
+            if (_pendingRight.Count > 0) targets.Add("우측 파일 ← " + _rightPath + "   (" + _pendingRight.Count + "셀 변경)");
+            if (_pendingLeft.Count > 0) targets.Add("좌측 파일 ← " + _leftPath + "   (" + _pendingLeft.Count + "셀 변경)");
+            string msg = "아래 원본 파일을 덮어써 저장합니다:\r\n\r\n · "
+                       + string.Join("\r\n · ", targets.ToArray())
+                       + "\r\n\r\n[예] 백업 복사본을 만든 뒤 저장\r\n[아니오] 백업 없이 저장\r\n[취소] 저장 안 함"
+                       + "\r\n\r\n※ 해당 원본이 Excel에서 열려 있으면 저장이 실패합니다. 먼저 닫아 주세요.";
+            DialogResult dr = MessageBox.Show(this, msg, "저장 확인", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (dr == DialogResult.Cancel) return;
+            bool backup = (dr == DialogResult.Yes);
+
             Logger.Info(string.Format("저장 시작 (좌 {0}, 우 {1}, 백업={2})",
                 _pendingLeft.Count, _pendingRight.Count, backup));
+
+            bool ok = false;
+            List<string> saved = new List<string>();
             try
             {
                 SetBusy(true);
-                if (_pendingRight.Count > 0) SaveOneSide(_rightPath, _pendingRight, backup);
-                if (_pendingLeft.Count > 0) SaveOneSide(_leftPath, _pendingLeft, backup);
+                if (_pendingRight.Count > 0)
+                {
+                    string bp = SaveOneSide(_rightPath, _pendingRight, backup);
+                    saved.Add("우: " + _rightPath + (bp != null ? "\r\n     (백업: " + bp + ")" : ""));
+                }
+                if (_pendingLeft.Count > 0)
+                {
+                    string bp = SaveOneSide(_leftPath, _pendingLeft, backup);
+                    saved.Add("좌: " + _leftPath + (bp != null ? "\r\n     (백업: " + bp + ")" : ""));
+                }
                 _pendingLeft.Clear();
                 _pendingRight.Clear();
-                _lblSummary.Text = "저장 완료. [비교]로 재검증을 권장합니다.";
-                Logger.Info("저장 완료");
-                Info("저장이 완료되었습니다.");
+                Logger.Info("저장 완료: " + string.Join(" | ", saved.ToArray()));
+                ok = true;
             }
             catch (Exception ex)
             {
                 Logger.Error("저장 실패", ex);
                 MessageBox.Show(this,
-                    "저장 실패(원본 보존):\r\n" + ex.Message +
-                    "\r\n\r\nDRM 편집권한이 없거나 파일이 잠겨있을 수 있습니다.",
+                    "저장 실패 — 원본은 그대로 보존되었습니다.\r\n\r\n" + ex.Message +
+                    "\r\n\r\n가능 원인:\r\n"
+                    + " · 원본 파일이 Excel 에서 열려 있음 → 닫고 다시 시도\r\n"
+                    + " · DRM 편집권한 없음(열람만 가능한 파일)\r\n"
+                    + " · 다른 프로그램이 파일을 잠금",
                     "저장 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
@@ -1024,6 +1193,17 @@ namespace ExcelDiffMerge
                 _gridLeft.Invalidate();
                 _gridRight.Invalidate();
             }
+
+            if (ok)
+            {
+                _lblSummary.Text = "저장 완료 — 최신 내용으로 다시 불러오는 중…";
+                MessageBox.Show(this,
+                    "저장이 완료되었습니다:\r\n\r\n" + string.Join("\r\n", saved.ToArray())
+                    + "\r\n\r\n저장된 내용을 반영하기 위해 다시 비교합니다.",
+                    "저장 완료", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // 화면 갱신: 디스크에서 재로드 후 재비교(저장 후 화면 미갱신 문제 해결).
+                LoadAndCompare(false);
+            }
         }
 
         private bool IsCsvSession()
@@ -1031,7 +1211,8 @@ namespace ExcelDiffMerge
             return Directory.Exists(_leftPath) || Directory.Exists(_rightPath);
         }
 
-        private void SaveOneSide(string path, Dictionary<string, object> pending, bool backup)
+        /// <summary>한쪽 파일을 저장하고 백업 경로(없으면 null)를 반환.</summary>
+        private string SaveOneSide(string path, Dictionary<string, object> pending, bool backup)
         {
             List<MergeItem> items = new List<MergeItem>();
             foreach (KeyValuePair<string, object> kv in pending)
@@ -1045,6 +1226,7 @@ namespace ExcelDiffMerge
             }
             // COM 쓰기도 STA 필요 → 저장은 동기(짧음)로 STA 스레드에서.
             Exception error = null;
+            string backupOut = null;
             Thread t = StaTask.Run<bool>(
                 delegate
                 {
@@ -1052,12 +1234,14 @@ namespace ExcelDiffMerge
                     {
                         string backupPath;
                         me.ApplyAndSave(path, items, backup, out backupPath);
+                        backupOut = backupPath;
                     }
                     return true;
                 },
-                delegate(bool ok, Exception err) { error = err; });
+                delegate(bool okk, Exception err) { error = err; });
             t.Join();
             if (error != null) throw error;
+            return backupOut;
         }
 
         // ================================================================ N-way / DnD / 온보딩

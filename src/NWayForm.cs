@@ -25,6 +25,7 @@ namespace ExcelDiffMerge
         private ListBox _lstVersions;
         private TabControl _tabs;
         private DataGridView _grid;
+        private Label _help;
         private ToolStripStatusLabel _lblSummary;
         private ToolStripProgressBar _progress;
         private bool _busy;
@@ -111,6 +112,27 @@ namespace ExcelDiffMerge
             _grid.CellFormatting += Grid_CellFormatting;
             Controls.Add(_grid);
             _grid.BringToFront();
+
+            // 빈 화면일 때 사용법 안내(비교 성공 시 숨김).
+            _help = new Label();
+            _help.Dock = DockStyle.Fill;
+            _help.TextAlign = ContentAlignment.MiddleLeft;
+            _help.Padding = new Padding(24);
+            _help.Font = new Font("Segoe UI", 10F);
+            _help.Text =
+                "■ N-way 취합이란?\r\n"
+              + "   기준 파일(base) 하나에 대해, 여러 버전(2개 이상)이 각각 무엇을 바꿨는지\r\n"
+              + "   한 표에서 비교합니다. 여러 명이 같은 파일을 각자 수정했을 때 취합에 유용합니다.\r\n\r\n"
+              + "■ 사용 순서 (위 툴바 버튼)\r\n"
+              + "   1) [base 선택]  — 기준이 되는 원본 파일 1개 선택\r\n"
+              + "   2) [버전 추가]  — 비교할 수정본들을 하나씩 추가 (2개 이상 권장)\r\n"
+              + "   3) [비교]        — base 대비 각 버전의 변경을 표로 표시\r\n"
+              + "                     · 노랑 = 변경,  주황 = 충돌(여러 버전이 같은 셀을 다르게 변경)\r\n"
+              + "   4) [선택 셀 값 채택…] — 표에서 셀을 고르고, base/각 버전 값 중 채택할 값 선택\r\n"
+              + "   5) [base 에 저장]     — 채택한 값들을 base 파일에 저장(백업 선택)\r\n\r\n"
+              + "※ 2개 파일만 비교하려면 이 창을 닫고 메인 화면의 [좌측/우측 열기] → [비교]를 쓰세요.";
+            Controls.Add(_help);
+            _help.BringToFront();
 
             StatusStrip status = new StatusStrip();
             _lblSummary = new ToolStripStatusLabel("base 와 버전들을 지정하고 [비교]를 누르세요.");
@@ -216,6 +238,7 @@ namespace ExcelDiffMerge
                 return;
             }
             _result = res;
+            if (_help != null) _help.Visible = false;   // 결과 표시 → 안내 숨김
             PopulateTabs();
             _lblSummary.Text = _result.Summary();
         }
