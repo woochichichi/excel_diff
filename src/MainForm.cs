@@ -33,6 +33,8 @@ namespace ExcelDiffMerge
         private ToolStripButton _btnMergeLR;
         private ToolStripButton _btnMergeRL;
         private ToolStripButton _btnSave;
+        private ToolStripButton _btnMergeAllLR;
+        private ToolStripButton _btnMergeAllRL;
         private ToolStripButton _btnChangeList;
         private ToolStripComboBox _cboAlign;
         private ToolStripTextBox _txtKeyCol;
@@ -115,15 +117,15 @@ namespace ExcelDiffMerge
             primary.Items.Add(BigBtn("우측 열기", "비교 대상(오른쪽) 파일 열기", delegate { OpenFile(false); }, false));
             primary.Items.Add(BigBtn("비교", "두 파일을 비교 (가장 중요)", delegate { StartCompareExcel(); }, true));
             primary.Items.Add(new ToolStripSeparator());
-            // 차이 이동은 화살표(직관적) 유지.
-            _btnPrev = BigBtn("◀ 이전차이", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
-            _btnNext = BigBtn("다음차이 ▶", "다음 차이로 이동 (F7)", delegate { NavigateDiff(1); }, false);
+            // 차이 이동은 화살표 없이 텍스트로.
+            _btnPrev = BigBtn("이전차이", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
+            _btnNext = BigBtn("다음차이", "다음 차이로 이동 (F7)", delegate { NavigateDiff(1); }, false);
             primary.Items.Add(_btnPrev);
             primary.Items.Add(_btnNext);
             primary.Items.Add(new ToolStripSeparator());
-            // 병합: 값이 흐르는 방향으로 화살표(→ 는 목적지 방향). 차이이동(◀▶ 삼각형)과 글리프가 달라 구분됨.
-            _btnMergeLR = BigBtn("왼쪽값 → 오른쪽", "선택한 셀을 왼쪽(좌) 값으로 오른쪽(우)에 덮어쓰기(병합 대기)", delegate { MergeSelected(true); }, false);
-            _btnMergeRL = BigBtn("왼쪽 ← 오른쪽값", "선택한 셀을 오른쪽(우) 값으로 왼쪽(좌)에 덮어쓰기(병합 대기)", delegate { MergeSelected(false); }, false);
+            // 병합: 부등호가 값이 가는 '방향'(목적지)을 가리킴.  '왼쪽 > 오른쪽' = 왼쪽값을 오른쪽으로.
+            _btnMergeLR = BigBtn("왼쪽 > 오른쪽", "선택한 셀: 왼쪽(좌) 값을 오른쪽(우)에 적용(병합 대기)", delegate { MergeSelected(true); }, false);
+            _btnMergeRL = BigBtn("왼쪽 < 오른쪽", "선택한 셀: 오른쪽(우) 값을 왼쪽(좌)에 적용(병합 대기)", delegate { MergeSelected(false); }, false);
             _btnSave = BigBtn("저장", "병합 결과를 원본 파일에 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
             primary.Items.Add(_btnMergeLR);
             primary.Items.Add(_btnMergeRL);
@@ -162,6 +164,12 @@ namespace ExcelDiffMerge
             _btnChangeList.ToolTipText = "우측 변경목록 패널 표시/숨기기 (클릭 시 해당 셀로 이동)";
             _btnChangeList.CheckedChanged += delegate { if (_changePanel != null) _changePanel.Visible = _btnChangeList.Checked; };
             secondary.Items.Add(_btnChangeList);
+            secondary.Items.Add(new ToolStripSeparator());
+            secondary.Items.Add(new ToolStripLabel("전체병합:"));
+            _btnMergeAllLR = SmallBtn("모두 왼쪽>오른쪽", "모든 차이 셀에 대해 왼쪽 값을 오른쪽에 한꺼번에 적용", delegate { MergeAll(true); });
+            _btnMergeAllRL = SmallBtn("모두 왼쪽<오른쪽", "모든 차이 셀에 대해 오른쪽 값을 왼쪽에 한꺼번에 적용", delegate { MergeAll(false); });
+            secondary.Items.Add(_btnMergeAllLR);
+            secondary.Items.Add(_btnMergeAllRL);
             secondary.Items.Add(new ToolStripSeparator());
             secondary.Items.Add(SmallBtn("N-way 취합…", "여러 버전(3개 이상) 취합 비교 — 사용법 안내 포함", delegate { OpenNWayDialog(); }));
             secondary.Items.Add(SmallBtn("CSV폴더비교(테스트)", "Excel 없이 CSV 폴더 2개 비교", delegate { StartCompareCsv(); }));
@@ -386,6 +394,8 @@ namespace ExcelDiffMerge
             if (_btnNext != null) _btnNext.Enabled = realDiff;
             if (_btnMergeLR != null) _btnMergeLR.Enabled = canMerge;
             if (_btnMergeRL != null) _btnMergeRL.Enabled = canMerge;
+            if (_btnMergeAllLR != null) _btnMergeAllLR.Enabled = canMerge;
+            if (_btnMergeAllRL != null) _btnMergeAllRL.Enabled = canMerge;
             if (_btnChangesOnly != null) _btnChangesOnly.Enabled = realDiff;
             if (_btnSave != null) _btnSave.Enabled = hasPending;
         }
@@ -1151,11 +1161,67 @@ namespace ExcelDiffMerge
             UpdateButtonStates();
         }
 
+        /// <summary>모든 시트의 모든 차이 셀을 한쪽 값으로 일괄 병합(대기 등록). leftToRight=true → 왼쪽값을 오른쪽에.</summary>
+        private void MergeAll(bool leftToRight)
+        {
+            if (_diff == null || _isPreview) { Info("먼저 [비교]를 실행하세요."); return; }
+            if (IsReadOnlySession()) { Info("CSV/Word 세션은 병합 저장을 지원하지 않습니다."); return; }
+
+            // 적용 가능 개수 미리 집계(행추가/삭제로 대상행 없는 셀은 제외).
+            int applicable = 0, skipped = 0;
+            foreach (SheetDiff sd in _diff.Sheets)
+            {
+                foreach (DiffNav nv in sd.Nav)
+                {
+                    DiffRow dr = sd.Rows[nv.RowIndex];
+                    int dstRow = leftToRight ? dr.RightRow : dr.LeftRow;
+                    if (dstRow < 0) skipped++; else applicable++;
+                }
+            }
+            if (applicable == 0)
+            {
+                Info("일괄 병합할 셀이 없습니다." + (skipped > 0 ? "\r\n(행 추가/삭제 " + skipped + "건은 미지원)" : ""));
+                return;
+            }
+
+            string dir = leftToRight ? "왼쪽값 → 오른쪽" : "오른쪽값 → 왼쪽";
+            DialogResult ans = MessageBox.Show(this,
+                "모든 시트의 차이 " + applicable + "개 셀을 [" + dir + "] 방향으로 한꺼번에 병합 대기에 등록합니다.\r\n"
+                + (skipped > 0 ? "(행 추가/삭제로 대응 불가한 " + skipped + "건은 제외)\r\n" : "")
+                + "\r\n계속하시겠어요? (등록 후 [저장]을 눌러야 실제 파일에 반영됩니다.)",
+                "전체 병합", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (ans != DialogResult.Yes) return;
+
+            int applied = 0;
+            foreach (SheetDiff sd in _diff.Sheets)
+            {
+                foreach (DiffNav nv in sd.Nav)
+                {
+                    DiffRow dr = sd.Rows[nv.RowIndex];
+                    int srcRow = leftToRight ? dr.LeftRow : dr.RightRow;
+                    int dstRow = leftToRight ? dr.RightRow : dr.LeftRow;
+                    if (dstRow < 0) continue;
+                    SheetData srcSheet = leftToRight ? sd.Left : sd.Right;
+                    object srcVal = (srcRow >= 0 && srcSheet != null) ? srcSheet.GetValueAbs(srcRow, nv.Col) : null;
+                    string key = CellKey(sd.Name, dstRow, nv.Col);
+                    if (leftToRight) _pendingRight[key] = srcVal;
+                    else _pendingLeft[key] = srcVal;
+                    applied++;
+                }
+            }
+            _gridLeft.Invalidate();
+            _gridRight.Invalidate();
+            _lblSummary.Text = string.Format("전체 병합 대기 등록 완료 ({0}개 {1}). [저장]으로 반영하세요. 대기 좌:{2} 우:{3}",
+                applied, dir, _pendingLeft.Count, _pendingRight.Count);
+            Logger.Info(string.Format("전체 병합 {0}: 적용 {1}, 제외 {2}", dir, applied, skipped));
+            UpdateButtonStates();
+        }
+
         private void SaveMerges()
         {
             if (_pendingLeft.Count == 0 && _pendingRight.Count == 0)
             {
-                Info("저장할 병합 변경이 없습니다.\r\n\r\n먼저 셀을 선택하고 [왼쪽값을 오른쪽에]/[오른쪽값을 왼쪽에]로 병합한 뒤 저장하세요.");
+                Info("저장할 병합 변경이 없습니다.\r\n\r\n먼저 셀을 선택하고 [왼쪽 > 오른쪽]/[왼쪽 < 오른쪽]으로 병합하거나, 보조 툴바의 [전체병합]을 사용한 뒤 저장하세요.");
                 return;
             }
             if (IsCsvSession())
