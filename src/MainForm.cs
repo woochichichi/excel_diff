@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
@@ -50,7 +51,22 @@ namespace ExcelDiffMerge
         private ToolStripStatusLabel _lblSummary;
         private ToolStripProgressBar _progress;
         private ToolStripButton _btnChangesOnly;
-        private Label _detail;
+        private RichTextBox _detail;
+
+        // 최근 비교 드롭다운 / 폰트 / 병합취소 등 추가 UI (개선)
+        private ToolStripDropDownButton _btnRecent;
+        private ToolStripButton _btnFontUp;
+        private ToolStripButton _btnFontDown;
+        private ToolStripButton _btnCancelMerge;
+        private ToolStripButton _btnAutoFit;
+        private TextBox _txtSearch;      // 변경목록 검색(U4)
+        private ComboBox _cboKind;       // 변경목록 종류 필터(U4)
+        private ContextMenuStrip _cellMenu;   // 그리드 셀 우클릭(U8)
+        private ToolStripMenuItem _cellMenuCancel;
+        private DataGridView _ctxGrid;   // 마지막 우클릭 그리드/셀
+        private int _ctxRow = -1;
+        private int _ctxCol = -1;
+        private float _gridFontSize = 9f;
 
         // 상태
         private string _leftPath;
@@ -114,8 +130,8 @@ namespace ExcelDiffMerge
             primary.Renderer = new ToolStripProfessionalRenderer();
 
             primary.Items.Add(BigBtn("좌측 열기", "비교 기준(왼쪽) 파일 열기 — Ctrl+O", delegate { OpenFile(true); }, false));
-            primary.Items.Add(BigBtn("우측 열기", "비교 대상(오른쪽) 파일 열기", delegate { OpenFile(false); }, false));
-            primary.Items.Add(BigBtn("비교", "두 파일을 비교 (가장 중요)", delegate { StartCompareExcel(); }, true));
+            primary.Items.Add(BigBtn("우측 열기", "비교 대상(오른쪽) 파일 열기 — Ctrl+Shift+O", delegate { OpenFile(false); }, false));
+            primary.Items.Add(BigBtn("비교", "두 파일을 비교 (가장 중요) — F5", delegate { StartCompareExcel(); }, true));
             primary.Items.Add(new ToolStripSeparator());
             // 차이 이동은 화살표 없이 텍스트로.
             _btnPrev = BigBtn("이전차이", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
@@ -124,8 +140,8 @@ namespace ExcelDiffMerge
             primary.Items.Add(_btnNext);
             primary.Items.Add(new ToolStripSeparator());
             // 병합: 부등호가 값이 가는 '방향'(목적지)을 가리킴.  '왼쪽 > 오른쪽' = 왼쪽값을 오른쪽으로.
-            _btnMergeLR = BigBtn("왼쪽 > 오른쪽", "선택한 셀: 왼쪽(좌) 값을 오른쪽(우)에 적용(병합 대기)", delegate { MergeSelected(true); }, false);
-            _btnMergeRL = BigBtn("왼쪽 < 오른쪽", "선택한 셀: 오른쪽(우) 값을 왼쪽(좌)에 적용(병합 대기)", delegate { MergeSelected(false); }, false);
+            _btnMergeLR = BigBtn("왼쪽 > 오른쪽", "선택한 셀: 왼쪽(좌) 값을 오른쪽(우)에 적용(병합 대기) — Alt+→", delegate { MergeSelected(true); }, false);
+            _btnMergeRL = BigBtn("왼쪽 < 오른쪽", "선택한 셀: 오른쪽(우) 값을 왼쪽(좌)에 적용(병합 대기) — Alt+←", delegate { MergeSelected(false); }, false);
             _btnSave = BigBtn("저장", "병합 결과를 원본 파일에 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
             primary.Items.Add(_btnMergeLR);
             primary.Items.Add(_btnMergeRL);
@@ -137,6 +153,12 @@ namespace ExcelDiffMerge
             secondary.GripStyle = ToolStripGripStyle.Hidden;
             secondary.Dock = DockStyle.Top;
             secondary.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular);
+
+            _btnRecent = new ToolStripDropDownButton("최근 비교 ▾");
+            _btnRecent.ToolTipText = "최근 비교한 좌/우 파일 쌍 (클릭 시 불러와 비교)";
+            _btnRecent.DropDownOpening += delegate { BuildRecentMenu(); };
+            secondary.Items.Add(_btnRecent);
+            secondary.Items.Add(new ToolStripSeparator());
 
             secondary.Items.Add(new ToolStripLabel("정렬:"));
             _cboAlign = new ToolStripComboBox();
@@ -173,6 +195,16 @@ namespace ExcelDiffMerge
             secondary.Items.Add(new ToolStripSeparator());
             secondary.Items.Add(SmallBtn("N-way 취합…", "여러 버전(3개 이상) 취합 비교 — 사용법 안내 포함", delegate { OpenNWayDialog(); }));
             secondary.Items.Add(SmallBtn("CSV폴더비교(테스트)", "Excel 없이 CSV 폴더 2개 비교", delegate { StartCompareCsv(); }));
+            secondary.Items.Add(new ToolStripSeparator());
+            _btnFontUp = SmallBtn("글자+", "그리드 글자 크게 (Ctrl+마우스휠 위)", delegate { ApplyGridFont(_gridFontSize + 1f); });
+            _btnFontDown = SmallBtn("글자−", "그리드 글자 작게 (Ctrl+마우스휠 아래)", delegate { ApplyGridFont(_gridFontSize - 1f); });
+            secondary.Items.Add(_btnFontUp);
+            secondary.Items.Add(_btnFontDown);
+            _btnAutoFit = SmallBtn("열 자동맞춤", "표시 중인 셀 기준으로 열 너비 자동 조정 (열 머리글 더블클릭=해당 열만)", delegate { AutoFitColumns(); });
+            secondary.Items.Add(_btnAutoFit);
+            _btnCancelMerge = SmallBtn("병합 취소", "병합 대기 중인 변경을 모두 취소", delegate { CancelAllMerges(); });
+            secondary.Items.Add(_btnCancelMerge);
+            secondary.Items.Add(new ToolStripSeparator());
             secondary.Items.Add(SmallBtn("로그 열기", "로그 파일 위치 보기", delegate { ShowLogPath(); }));
 
             // ----- 범례
@@ -223,10 +255,14 @@ namespace ExcelDiffMerge
             Panel detailPanel = new Panel();
             detailPanel.Dock = DockStyle.Bottom;
             detailPanel.Height = 84;
-            _detail = new Label();
+            _detail = new RichTextBox();
             _detail.Dock = DockStyle.Fill;
             _detail.Font = new Font(FontFamily.GenericMonospace, 9f);
-            _detail.Padding = new Padding(8, 4, 8, 4);
+            _detail.ReadOnly = true;              // 값 선택/복사 가능(U3), 편집 불가
+            _detail.BorderStyle = BorderStyle.None;
+            _detail.BackColor = SystemColors.Window;
+            _detail.WordWrap = false;
+            _detail.ScrollBars = RichTextBoxScrollBars.Vertical;
             _detail.Text = "셀을 선택하면 좌/우 값·수식을 여기에 표시합니다.";
             detailPanel.Controls.Add(_detail);
 
@@ -250,9 +286,20 @@ namespace ExcelDiffMerge
             Controls.Add(detailPanel);  // Bottom
             Controls.Add(status);       // Bottom(최하단)
 
+            // 그리드 셀 우클릭 컨텍스트 메뉴(U8)
+            _cellMenu = new ContextMenuStrip();
+            _cellMenuCancel = new ToolStripMenuItem("이 셀 병합 취소");
+            _cellMenuCancel.Click += delegate { CancelOneCell(); };
+            _cellMenu.Items.Add(_cellMenuCancel);
+
             UpdateKeyColEnabled();
             UpdateButtonStates();
             RestoreWindow();
+
+            // 그리드 글자 크기 복원(U5). 저장값 없으면 기본 9.
+            float savedFont = _settings.GridFontSize;
+            ApplyGridFont(savedFont >= 6f ? savedFont : 9f);
+
             FormClosing += delegate { SaveWindow(); };
         }
 
@@ -270,6 +317,23 @@ namespace ExcelDiffMerge
             _changeHeader.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
             _changeHeader.Text = "변경 목록 (비교 후 표시)";
 
+            // 검색/필터 줄 (U4)
+            Panel filter = new Panel();
+            filter.Dock = DockStyle.Top;
+            filter.Height = 26;
+            _txtSearch = new TextBox();
+            _txtSearch.Dock = DockStyle.Fill;
+            _txtSearch.TextChanged += delegate { PopulateChangeList(); };
+            _cboKind = new ComboBox();
+            _cboKind.Dock = DockStyle.Right;
+            _cboKind.Width = 80;
+            _cboKind.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cboKind.Items.AddRange(new object[] { "전체", "변경", "추가", "삭제" });
+            _cboKind.SelectedIndex = 0;
+            _cboKind.SelectedIndexChanged += delegate { PopulateChangeList(); };
+            filter.Controls.Add(_txtSearch);
+            filter.Controls.Add(_cboKind);
+
             _changeList = new ListView();
             _changeList.Dock = DockStyle.Fill;
             _changeList.View = View.Details;
@@ -284,8 +348,31 @@ namespace ExcelDiffMerge
             _changeList.Click += delegate { JumpToSelectedChange(); };
 
             p.Controls.Add(_changeList);
+            p.Controls.Add(filter);
             p.Controls.Add(_changeHeader);
             return p;
+        }
+
+        /// <summary>변경목록 필터(검색어/종류)에 맞으면 true.</summary>
+        private bool ChangeFilterMatch(string sheet, string pos, CellStatus st, string leftText, string rightText)
+        {
+            if (_cboKind != null)
+            {
+                int k = _cboKind.SelectedIndex;   // 0=전체 1=변경 2=추가 3=삭제
+                if (k == 1 && st != CellStatus.Changed) return false;
+                if (k == 2 && st != CellStatus.Added) return false;
+                if (k == 3 && st != CellStatus.Deleted) return false;
+            }
+            if (_txtSearch != null)
+            {
+                string q = _txtSearch.Text != null ? _txtSearch.Text.Trim() : "";
+                if (q.Length > 0)
+                {
+                    string hay = (sheet + " " + pos + " " + leftText + " " + rightText);
+                    if (hay.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) return false;
+                }
+            }
+            return true;
         }
 
         private void PopulateChangeList()
@@ -310,10 +397,14 @@ namespace ExcelDiffMerge
                         object rv = dr.RightRow >= 0 && sd.Right != null ? sd.Right.GetValueAbs(dr.RightRow, nv.Col) : null;
                         int rowNo = dr.LeftRow >= 0 ? dr.LeftRow : dr.RightRow;
 
+                        string pos = ColLetter(nv.Col) + rowNo;
+                        string lvs = ShortCell(lv), rvs = ShortCell(rv);
+                        if (!ChangeFilterMatch(sd.Name, pos, st, lvs, rvs)) continue;
+
                         ListViewItem it = new ListViewItem(sd.Name);
-                        it.SubItems.Add(ColLetter(nv.Col) + rowNo);
+                        it.SubItems.Add(pos);
                         it.SubItems.Add(KindLabel(st));
-                        it.SubItems.Add(ShortCell(lv) + " → " + ShortCell(rv));
+                        it.SubItems.Add(lvs + " → " + rvs);
                         it.Tag = new object[] { sd, nv };
                         switch (st)
                         {
@@ -398,6 +489,7 @@ namespace ExcelDiffMerge
             if (_btnMergeAllRL != null) _btnMergeAllRL.Enabled = canMerge;
             if (_btnChangesOnly != null) _btnChangesOnly.Enabled = realDiff;
             if (_btnSave != null) _btnSave.Enabled = hasPending;
+            if (_btnCancelMerge != null) _btnCancelMerge.Enabled = hasPending;
         }
 
         private bool IsReadOnlySession()
@@ -484,11 +576,15 @@ namespace ExcelDiffMerge
             g.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
             g.AllowUserToResizeColumns = true;
             g.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+            g.ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText; // Ctrl+C 복사(U3)
             g.CellValueNeeded += Grid_CellValueNeeded;
             g.CellFormatting += Grid_CellFormatting;
             g.Scroll += Grid_Scroll;
             g.SelectionChanged += Grid_SelectionChanged;
             g.RowPostPaint += Grid_RowPostPaint;
+            g.MouseWheel += Grid_MouseWheel;                              // Ctrl+휠 글자크기(U5)
+            g.CellMouseDown += Grid_CellMouseDown;                        // 우클릭 병합취소(U8)
+            g.ColumnHeaderMouseDoubleClick += Grid_ColHeaderDoubleClick;  // 열 자동맞춤(U9)
             return g;
         }
 
@@ -720,12 +816,32 @@ namespace ExcelDiffMerge
         private void RunDiff()
         {
             if (_leftWb == null || _rightWb == null) return;
+
+            // B3: 키 컬럼 모드인데 키열이 비었거나 잘못되면 조용히 LCS 폴백하지 않고 안내.
+            AlignMode effMode = _alignMode;
+            if (_alignMode == AlignMode.KeyColumn && _keyCol < 0)
+            {
+                DialogResult a = MessageBox.Show(this,
+                    "키열이 비어 있거나 잘못됨 — 예: A\r\n\r\n"
+                    + "[예] 자동정렬(LCS)로 대신 비교합니다.\r\n"
+                    + "[아니오] 비교를 중단합니다(키열을 입력 후 다시 시도).",
+                    "키 컬럼 오류", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (a != DialogResult.Yes)
+                {
+                    _lblSummary.Text = "비교 중단 — 키열이 비어 있거나 잘못됨(예: A).";
+                    Logger.Info("비교 중단: 키 컬럼 모드지만 키열 파싱 실패");
+                    return;
+                }
+                effMode = AlignMode.Auto;   // 사용자 확인 → 자동정렬로 진행
+                Logger.Info("키열 미입력 → 사용자 확인 후 자동정렬(LCS)로 진행");
+            }
+
             _isPreview = false;
             _pendingLeft.Clear();
             _pendingRight.Clear();
             try
             {
-                _diff = DiffEngine.Compare(_leftWb, _rightWb, _alignMode, _keyCol);
+                _diff = DiffEngine.Compare(_leftWb, _rightWb, effMode, _keyCol);
             }
             catch (Exception ex)
             {
@@ -735,15 +851,15 @@ namespace ExcelDiffMerge
             }
             PopulateTabs();
             PopulateChangeList();
-            _lblSummary.Text = _diff.Summary() + "  [" + AlignName() + "]";
-            Logger.Info("비교 결과: " + _diff.Summary() + " [" + AlignName() + "]");
+            _lblSummary.Text = _diff.Summary() + "  [" + AlignNameFor(effMode) + "]";
+            Logger.Info("비교 결과: " + _diff.Summary() + " [" + AlignNameFor(effMode) + "]");
             UpdateButtonStates();
         }
 
-        private string AlignName()
+        private string AlignNameFor(AlignMode mode)
         {
-            if (_alignMode == AlignMode.Coordinate) return "좌표";
-            if (_alignMode == AlignMode.KeyColumn) return "키:" + (_keyCol >= 0 ? ColLetter(_keyCol) : "?");
+            if (mode == AlignMode.Coordinate) return "좌표";
+            if (mode == AlignMode.KeyColumn) return "키:" + (_keyCol >= 0 ? ColLetter(_keyCol) : "?");
             return "자동정렬";
         }
 
@@ -753,6 +869,13 @@ namespace ExcelDiffMerge
             _settings.Set("AlignMode", ((int)_alignMode).ToString());
             _settings.Save();
             UpdateKeyColEnabled();
+            // 키 컬럼 모드로 막 전환했는데 키열이 아직 없으면, 곧바로 경고창을 띄우지 않고
+            // 안내만 한다(사용자가 키열 입력 후 [비교] 시 검증).
+            if (_alignMode == AlignMode.KeyColumn && _keyCol < 0 && !_isPreview)
+            {
+                _lblSummary.Text = "키 컬럼 모드 — 키열(예: A)을 입력한 뒤 [비교]를 누르세요.";
+                return;
+            }
             RunDiff();
         }
 
@@ -959,6 +1082,9 @@ namespace ExcelDiffMerge
             finally { _syncing = false; UpdateMarkerViewport(); }
         }
 
+        // 반대편 그리드에 미러링할 때 재진입(SelectionChanged 연쇄)을 막는 가드.
+        private const int MirrorCellCap = 4000;
+
         private void Grid_SelectionChanged(object sender, EventArgs e)
         {
             if (_syncing) return;
@@ -967,22 +1093,62 @@ namespace ExcelDiffMerge
             {
                 DataGridView src = (DataGridView)sender;
                 DataGridView dst = (src == _gridLeft) ? _gridRight : _gridLeft;
-                if (src.CurrentCell == null) return;
-                int r = src.CurrentCell.RowIndex, c = src.CurrentCell.ColumnIndex;
-                if (r >= 0 && r < dst.RowCount && c >= 0 && c < dst.ColumnCount)
-                    dst.CurrentCell = dst.Rows[r].Cells[c];
-                UpdateDetail(r, c);
+                MirrorSelection(src, dst);
+                if (src.CurrentCell != null)
+                    UpdateDetail(src.CurrentCell.RowIndex, src.CurrentCell.ColumnIndex);
             }
             catch { }
             finally { _syncing = false; }
         }
 
+        /// <summary>B1: 소스 그리드의 '선택 셀 전체'를 반대편 그리드에 동일하게 미러링.</summary>
+        private void MirrorSelection(DataGridView src, DataGridView dst)
+        {
+            if (dst.RowCount == 0 || dst.ColumnCount == 0) return;
+
+            // CurrentCell 을 먼저 세팅(그 뒤 다중 선택이 덮이지 않도록).
+            if (src.CurrentCell != null)
+            {
+                int cr = src.CurrentCell.RowIndex, cc = src.CurrentCell.ColumnIndex;
+                if (cr >= 0 && cr < dst.RowCount && cc >= 0 && cc < dst.ColumnCount)
+                {
+                    try { dst.CurrentCell = dst.Rows[cr].Cells[cc]; }
+                    catch { }
+                }
+            }
+
+            DataGridViewSelectedCellCollection sel = src.SelectedCells;
+            // 성능: 수천 셀 초과 선택 시 전체 미러링은 생략(CurrentCell 만 반영).
+            // 병합은 MergeSelected 가 '더 많이 선택된' 그리드를 소스로 쓰므로 정확성은 유지됨.
+            if (sel.Count > MirrorCellCap)
+            {
+                dst.ClearSelection();
+                if (src.CurrentCell != null)
+                {
+                    int cr = src.CurrentCell.RowIndex, cc = src.CurrentCell.ColumnIndex;
+                    if (cr >= 0 && cr < dst.RowCount && cc >= 0 && cc < dst.ColumnCount)
+                        dst.Rows[cr].Cells[cc].Selected = true;
+                }
+                return;
+            }
+
+            dst.ClearSelection();
+            for (int i = 0; i < sel.Count; i++)
+            {
+                DataGridViewCell cell = sel[i];
+                int r = cell.RowIndex, c = cell.ColumnIndex;
+                if (r >= 0 && r < dst.RowCount && c >= 0 && c < dst.ColumnCount)
+                    dst.Rows[r].Cells[c].Selected = true;
+            }
+        }
+
         private void UpdateDetail(int displayRow, int col)
         {
+            if (_detail == null) return;
+            _detail.Clear();
             if (_curSheet == null || displayRow < 0 || displayRow >= _rowMap.Length || col < 0)
-            {
-                _detail.Text = ""; return;
-            }
+                return;
+
             DiffRow dr = _curSheet.Rows[_rowMap[displayRow]];
             int absCol = _colStart + col;
             object lv = dr.LeftRow >= 0 && _curSheet.Left != null ? _curSheet.Left.GetValueAbs(dr.LeftRow, absCol) : null;
@@ -994,10 +1160,67 @@ namespace ExcelDiffMerge
             string addr = ColLetter(absCol);
             string lrow = dr.LeftRow >= 0 ? dr.LeftRow.ToString() : "-";
             string rrow = dr.RightRow >= 0 ? dr.RightRow.ToString() : "-";
-            _detail.Text =
-                string.Format("[{0}]  {1}열  (좌 {2}행 / 우 {3}행)\r\n", KindLabel(st), addr, lrow, rrow)
-              + string.Format("좌 값: {0}   |   좌 수식: {1}\r\n", Trunc(DiffEngine.ToText(lv)), Trunc(FormulaText(lf)))
-              + string.Format("우 값: {0}   |   우 수식: {1}", Trunc(DiffEngine.ToText(rv)), Trunc(FormulaText(rf)));
+            string lt = Trunc(DiffEngine.ToText(lv));
+            string rt = Trunc(DiffEngine.ToText(rv));
+
+            // 헤더 줄.
+            RtAppend(string.Format("[{0}]  {1}열  (좌 {2}행 / 우 {3}행)\r\n", KindLabel(st), addr, lrow, rrow), null);
+
+            // 변경 셀만 가운데 변경 구간을 강조(U7). 공통 접두/접미 제외.
+            int pre = 0, suf = 0;
+            bool highlight = (st == CellStatus.Changed) && lt != rt;
+            if (highlight) CommonAffix(lt, rt, out pre, out suf);
+
+            RtAppend("좌 값: ", null);
+            RtAppendSegmented(lt, highlight, pre, suf, ColDeleted);
+            RtAppend("   |   좌 수식: " + Trunc(FormulaText(lf)) + "\r\n", null);
+
+            RtAppend("우 값: ", null);
+            RtAppendSegmented(rt, highlight, pre, suf, ColAdded);
+            RtAppend("   |   우 수식: " + Trunc(FormulaText(rf)), null);
+
+            _detail.Select(0, 0);
+            _detail.SelectionLength = 0;
+        }
+
+        /// <summary>RichTextBox 에 배경색(back=null 이면 기본)으로 텍스트 추가.</summary>
+        private void RtAppend(string text, Color? back)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            int start = _detail.TextLength;
+            _detail.AppendText(text);
+            _detail.Select(start, text.Length);
+            _detail.SelectionBackColor = back.HasValue ? back.Value : _detail.BackColor;
+            _detail.SelectionColor = _detail.ForeColor;
+            _detail.SelectionLength = 0;
+        }
+
+        /// <summary>공통 접두(pre)/접미(suf)를 제외한 가운데 구간만 배경 강조해 추가.</summary>
+        private void RtAppendSegmented(string text, bool highlight, int pre, int suf, Color hl)
+        {
+            if (text == null) text = "";
+            if (!highlight || pre + suf >= text.Length)
+            {
+                RtAppend(text.Length == 0 ? "(빈칸)" : text, null);
+                return;
+            }
+            string a = text.Substring(0, pre);
+            string b = text.Substring(pre, text.Length - suf - pre);
+            string c = text.Substring(text.Length - suf);
+            RtAppend(a, null);
+            RtAppend(b, hl);
+            RtAppend(c, null);
+        }
+
+        /// <summary>두 문자열의 공통 접두/접미 길이(겹치지 않게).</summary>
+        private static void CommonAffix(string a, string b, out int pre, out int suf)
+        {
+            int max = Math.Min(a.Length, b.Length);
+            int p = 0;
+            while (p < max && a[p] == b[p]) p++;
+            int s = 0;
+            while (s < (max - p) && a[a.Length - 1 - s] == b[b.Length - 1 - s]) s++;
+            pre = p; suf = s;
         }
 
         private static string FormulaText(object f)
@@ -1071,17 +1294,86 @@ namespace ExcelDiffMerge
         {
             if (e.KeyCode == Keys.F7) { NavigateDiff(1); e.Handled = true; }
             else if (e.KeyCode == Keys.F8) { NavigateDiff(-1); e.Handled = true; }
+            else if (e.KeyCode == Keys.F5) { StartCompareExcel(); e.Handled = true; }
+            else if (e.Control && e.Shift && e.KeyCode == Keys.O) { OpenFile(false); e.Handled = true; e.SuppressKeyPress = true; }
             else if (e.Control && e.KeyCode == Keys.S) { SaveMerges(); e.Handled = true; }
             else if (e.Control && e.KeyCode == Keys.O) { OpenFile(true); e.Handled = true; }
+            else if (e.Control && e.KeyCode == Keys.F) { FocusChangeSearch(); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Alt && e.KeyCode == Keys.Right) { MergeSelected(true); e.Handled = true; e.SuppressKeyPress = true; }
+            else if (e.Alt && e.KeyCode == Keys.Left) { MergeSelected(false); e.Handled = true; e.SuppressKeyPress = true; }
+        }
+
+        /// <summary>Ctrl+F → 변경목록 검색창으로 포커스(U4).</summary>
+        private void FocusChangeSearch()
+        {
+            if (_txtSearch == null) return;
+            if (_changePanel != null && !_changePanel.Visible)
+            {
+                _changePanel.Visible = true;
+                if (_btnChangeList != null) _btnChangeList.Checked = true;
+            }
+            _txtSearch.Focus();
+            _txtSearch.SelectAll();
         }
 
         private void NavigateDiff(int dir)
         {
-            if (_curSheet == null || _curSheet.Nav.Count == 0) return;
-            _navIndex += dir;
-            if (_navIndex < 0) _navIndex = _curSheet.Nav.Count - 1;
-            if (_navIndex >= _curSheet.Nav.Count) _navIndex = 0;
+            if (_diff == null || _isPreview || _curSheet == null) return;
+
+            // 현재 시트 안에서 이동 가능한지 먼저 시도.
+            if (_curSheet.Nav.Count > 0)
+            {
+                int ni = _navIndex + dir;
+                if (ni >= 0 && ni < _curSheet.Nav.Count)
+                {
+                    _navIndex = ni;
+                    SelectCell(_curSheet.Nav[_navIndex]);
+                    return;
+                }
+            }
+
+            // 현재 시트 경계 도달 → 변경이 있는 다음/이전 시트로 자동 전환(U6).
+            if (JumpToAdjacentSheetDiff(dir)) return;
+
+            // 다른 시트에 변경이 없으면 현재 시트 안에서 순환(기존 동작).
+            if (_curSheet.Nav.Count == 0) return;
+            _navIndex = dir > 0 ? 0 : _curSheet.Nav.Count - 1;
             SelectCell(_curSheet.Nav[_navIndex]);
+        }
+
+        /// <summary>변경이 있는 다음/이전 시트 탭으로 전환해 그 시트의 첫/마지막 차이로 이동.</summary>
+        private bool JumpToAdjacentSheetDiff(int dir)
+        {
+            if (_diff == null || _diff.Sheets.Count == 0) return false;
+            int cur = _diff.Sheets.IndexOf(_curSheet);
+            if (cur < 0) return false;
+            int n = _diff.Sheets.Count;
+            for (int step = 1; step <= n; step++)
+            {
+                int idx = cur + dir * step;
+                idx = ((idx % n) + n) % n;   // 순환
+                if (idx == cur) break;
+                SheetDiff sd = _diff.Sheets[idx];
+                if (sd.Nav.Count == 0) continue;
+                SelectSheetTab(sd);          // OnSheetChanged → _curSheet=sd, _navIndex=-1
+                if (_curSheet == null) return false;
+                _navIndex = dir > 0 ? 0 : _curSheet.Nav.Count - 1;
+                SelectCell(_curSheet.Nav[_navIndex]);
+                return true;
+            }
+            return false;
+        }
+
+        private void SelectSheetTab(SheetDiff sd)
+        {
+            for (int i = 0; i < _tabs.TabPages.Count; i++)
+            {
+                if (_tabs.TabPages[i].Tag == sd)
+                {
+                    if (_tabs.SelectedIndex != i) _tabs.SelectedIndex = i; // OnSheetChanged 호출됨
+                    break;
+                }
+            }
         }
 
         /// <summary>주어진 차이(Nav) 셀을 좌/우 그리드에서 선택하고 화면에 보이게 스크롤.</summary>
@@ -1111,9 +1403,38 @@ namespace ExcelDiffMerge
             // 네비 인덱스를 이 셀에 맞춰 동기화(F7/F8 이 이어지도록).
             int idx = _curSheet.Nav.FindIndex(delegate(DiffNav x) { return x.RowIndex == nv.RowIndex && x.Col == nv.Col; });
             if (idx >= 0) _navIndex = idx;
-            _lblSummary.Text = string.Format("{0}  |  차이 {1}/{2}  ({3}열, 좌{4}/우{5}행)",
-                _diff.Summary(), _navIndex + 1, _curSheet.Nav.Count, ColLetter(nv.Col),
+
+            // 전역 진행도(U6): 시트 경계를 넘는 네비게이션도 한눈에.
+            int globalIdx, globalTotal, sheetNo, sheetTotal;
+            GlobalNavInfo(out globalIdx, out globalTotal, out sheetNo, out sheetTotal);
+            _lblSummary.Text = string.Format(
+                "차이 {0}/{1} — 시트 {2}/{3}  |  이 시트 {4}/{5}  ({6}열, 좌{7}/우{8}행)",
+                globalIdx, globalTotal, sheetNo, sheetTotal,
+                _navIndex + 1, _curSheet.Nav.Count, ColLetter(nv.Col),
                 RowLabel(true, nv.RowIndex), RowLabel(false, nv.RowIndex));
+        }
+
+        /// <summary>전체 시트에 걸친 차이 진행도(현재 차이 전역 순번/총 차이수, 현재 시트 순번/총 시트수).</summary>
+        private void GlobalNavInfo(out int globalIdx, out int globalTotal, out int sheetNo, out int sheetTotal)
+        {
+            globalIdx = 0; globalTotal = 0; sheetNo = 1; sheetTotal = 0;
+            if (_diff == null) return;
+            sheetTotal = _diff.Sheets.Count;
+            int before = 0;
+            bool passed = false;
+            for (int i = 0; i < _diff.Sheets.Count; i++)
+            {
+                SheetDiff sd = _diff.Sheets[i];
+                if (sd == _curSheet)
+                {
+                    sheetNo = i + 1;
+                    before = globalTotal;   // 현재 시트 앞까지의 누적 차이 수
+                    passed = true;
+                }
+                globalTotal += sd.Nav.Count;
+            }
+            if (!passed) before = 0;
+            globalIdx = before + _navIndex + 1;
         }
 
         private string RowLabel(bool left, int rowsIdx)
@@ -1127,11 +1448,16 @@ namespace ExcelDiffMerge
         private void MergeSelected(bool leftToRight)
         {
             if (_curSheet == null) return;
-            DataGridView g = leftToRight ? _gridLeft : _gridRight; // 소스
-            if (g.SelectedCells.Count == 0 && g.CurrentCell != null) g.CurrentCell.Selected = true;
+
+            // B1: 병합 방향은 버튼이 정하고, '선택 좌표'는 더 많이 선택된 그리드에서 취한다.
+            //     (미러링이 상한으로 접혔을 때도 반대편에서 드래그한 다중 선택을 살린다.)
+            DataGridView selGrid = (_gridLeft.SelectedCells.Count >= _gridRight.SelectedCells.Count)
+                                 ? _gridLeft : _gridRight;
+            if (selGrid.SelectedCells.Count == 0 && selGrid.CurrentCell != null)
+                selGrid.CurrentCell.Selected = true;
 
             int applied = 0, skipped = 0;
-            foreach (DataGridViewCell cell in g.SelectedCells)
+            foreach (DataGridViewCell cell in selGrid.SelectedCells)
             {
                 if (cell.RowIndex < 0 || cell.RowIndex >= _rowMap.Length) continue;
                 DiffRow dr = _curSheet.Rows[_rowMap[cell.RowIndex]];
@@ -1139,13 +1465,14 @@ namespace ExcelDiffMerge
 
                 int srcRow = leftToRight ? dr.LeftRow : dr.RightRow;
                 int dstRow = leftToRight ? dr.RightRow : dr.LeftRow;
-                if (dstRow < 0)
+                if (dstRow < 0 || srcRow < 0)
                 {
-                    // 대상 행이 없음(행 추가/삭제 병합) → 1차 미지원.
+                    // 대상행 또는 소스행이 없음(행 추가/삭제) → 미지원.
+                    // (srcRow<0 을 null 로 등록하면 반대편 신규 데이터를 지우므로 제외.)
                     skipped++;
                     continue;
                 }
-                object srcVal = srcRow >= 0 ? EffectiveValue(leftToRight, dr, absCol) : null;
+                object srcVal = EffectiveValue(leftToRight, dr, absCol);
                 string key = CellKey(_curSheet.Name, dstRow, absCol);
                 if (leftToRight) _pendingRight[key] = srcVal;
                 else _pendingLeft[key] = srcVal;
@@ -1174,8 +1501,10 @@ namespace ExcelDiffMerge
                 foreach (DiffNav nv in sd.Nav)
                 {
                     DiffRow dr = sd.Rows[nv.RowIndex];
+                    int srcRow = leftToRight ? dr.LeftRow : dr.RightRow;
                     int dstRow = leftToRight ? dr.RightRow : dr.LeftRow;
-                    if (dstRow < 0) skipped++; else applicable++;
+                    // B2: 대상행뿐 아니라 '소스행 없음(srcRow<0)'도 제외. (null 등록 시 반대편 신규 데이터 삭제됨.)
+                    if (dstRow < 0 || srcRow < 0) skipped++; else applicable++;
                 }
             }
             if (applicable == 0)
@@ -1200,9 +1529,10 @@ namespace ExcelDiffMerge
                     DiffRow dr = sd.Rows[nv.RowIndex];
                     int srcRow = leftToRight ? dr.LeftRow : dr.RightRow;
                     int dstRow = leftToRight ? dr.RightRow : dr.LeftRow;
-                    if (dstRow < 0) continue;
+                    // B2: 소스행이 없으면(srcRow<0) 건너뜀 — null 로 덮으면 반대편 신규 행 데이터가 지워짐.
+                    if (dstRow < 0 || srcRow < 0) continue;
                     SheetData srcSheet = leftToRight ? sd.Left : sd.Right;
-                    object srcVal = (srcRow >= 0 && srcSheet != null) ? srcSheet.GetValueAbs(srcRow, nv.Col) : null;
+                    object srcVal = srcSheet != null ? srcSheet.GetValueAbs(srcRow, nv.Col) : null;
                     string key = CellKey(sd.Name, dstRow, nv.Col);
                     if (leftToRight) _pendingRight[key] = srcVal;
                     else _pendingLeft[key] = srcVal;
@@ -1338,6 +1668,182 @@ namespace ExcelDiffMerge
             t.Join();
             if (error != null) throw error;
             return backupOut;
+        }
+
+        // ================================================================ 최근 비교(U1)
+        private void BuildRecentMenu()
+        {
+            if (_btnRecent == null) return;
+            _btnRecent.DropDownItems.Clear();
+            List<string[]> pairs = _settings.GetRecentPairs();
+            if (pairs.Count == 0)
+            {
+                ToolStripMenuItem empty = new ToolStripMenuItem("(최근 비교 없음)");
+                empty.Enabled = false;
+                _btnRecent.DropDownItems.Add(empty);
+                return;
+            }
+            foreach (string[] pr in pairs)
+            {
+                string left = pr[0], right = pr[1];
+                string text = FileLabel(left) + "  ↔  " + FileLabel(right);
+                ToolStripMenuItem it = new ToolStripMenuItem(text);
+                it.ToolTipText = "좌: " + left + "\r\n우: " + right;
+                string cl = left, cr = right;   // 클로저 캡처(C#5 안전)
+                it.Click += delegate { OpenRecentPair(cl, cr); };
+                _btnRecent.DropDownItems.Add(it);
+            }
+        }
+
+        private static string FileLabel(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "(없음)";
+            try { return Path.GetFileName(path.TrimEnd('\\', '/')); }
+            catch { return path; }
+        }
+
+        private void OpenRecentPair(string left, string right)
+        {
+            bool lok = File.Exists(left) || Directory.Exists(left);
+            bool rok = File.Exists(right) || Directory.Exists(right);
+            if (!lok || !rok)
+            {
+                Info("최근 비교 파일을 찾을 수 없습니다:\r\n"
+                    + (lok ? "" : "· 좌: " + left + "\r\n")
+                    + (rok ? "" : "· 우: " + right + "\r\n")
+                    + "\r\n이동/삭제되었을 수 있습니다.");
+                return;
+            }
+            _leftPath = left; _rightPath = right;
+            _lblLeftPath.Text = left; _lblRightPath.Text = right;
+            _leftWb = null; _rightWb = null;   // 캐시 무효화 후 재로드
+            Logger.Info("최근 비교 선택 → 로드/비교: 좌=" + left + " 우=" + right);
+            LoadAndCompare(IsCsvSession());
+        }
+
+        // ================================================================ 그리드 글자 크기(U5)
+        private void ApplyGridFont(float size)
+        {
+            if (size < 6f) size = 6f;
+            if (size > 22f) size = 22f;
+            _gridFontSize = size;
+            Font f = new Font(FontFamily.GenericSansSerif, size);
+            int h = (int)Math.Ceiling(size * 1.7f) + 8;
+            ApplyGridFontOne(_gridLeft, f, h);
+            ApplyGridFontOne(_gridRight, f, h);
+            _settings.GridFontSize = size;   // 저장은 종료 시(SaveWindow)
+        }
+
+        private void ApplyGridFontOne(DataGridView g, Font f, int h)
+        {
+            if (g == null) return;
+            g.DefaultCellStyle.Font = f;
+            g.RowTemplate.Height = h;
+            // 가상모드: 이미 만들어진 행에도 새 높이를 반영하려면 RowCount 를 재설정.
+            if (g.Columns.Count > 0)
+            {
+                int keep = g.RowCount;
+                g.RowCount = 0;
+                g.RowCount = keep;
+            }
+        }
+
+        private void Grid_MouseWheel(object sender, MouseEventArgs e)
+        {
+            if ((ModifierKeys & Keys.Control) != Keys.Control) return;
+            ApplyGridFont(_gridFontSize + (e.Delta > 0 ? 1f : -1f));
+            HandledMouseEventArgs he = e as HandledMouseEventArgs;
+            if (he != null) he.Handled = true;   // 스크롤 대신 확대/축소로 소비
+        }
+
+        // ================================================================ 열 자동맞춤(U9)
+        private void AutoFitColumns()
+        {
+            try
+            {
+                _gridLeft.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
+                _gridRight.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
+            }
+            catch { }
+        }
+
+        private void Grid_ColHeaderDoubleClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.ColumnIndex < 0) return;
+            try
+            {
+                // 좌우 정렬 유지를 위해 같은 열을 양쪽에 동일 적용.
+                if (e.ColumnIndex < _gridLeft.ColumnCount)
+                    _gridLeft.AutoResizeColumn(e.ColumnIndex, DataGridViewAutoSizeColumnMode.DisplayedCells);
+                if (e.ColumnIndex < _gridRight.ColumnCount)
+                    _gridRight.AutoResizeColumn(e.ColumnIndex, DataGridViewAutoSizeColumnMode.DisplayedCells);
+            }
+            catch { }
+        }
+
+        // ================================================================ 병합 취소(U8)
+        private void CancelAllMerges()
+        {
+            int n = _pendingLeft.Count + _pendingRight.Count;
+            if (n == 0) { Info("취소할 병합 대기가 없습니다."); return; }
+            DialogResult ans = MessageBox.Show(this,
+                "병합 대기 중인 변경 " + n + "건을 모두 취소합니다.\r\n계속하시겠어요?",
+                "병합 취소", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (ans != DialogResult.Yes) return;
+            _pendingLeft.Clear();
+            _pendingRight.Clear();
+            _gridLeft.Invalidate();
+            _gridRight.Invalidate();
+            _lblSummary.Text = "병합 대기를 모두 취소했습니다.";
+            Logger.Info("병합 대기 전체 취소 (" + n + "건)");
+            UpdateButtonStates();
+        }
+
+        private void Grid_CellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right) return;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            DataGridView g = (DataGridView)sender;
+            _ctxGrid = g; _ctxRow = e.RowIndex; _ctxCol = e.ColumnIndex;
+            // 우클릭 셀을 현재 셀로(선택 미러링 포함).
+            try { g.CurrentCell = g.Rows[e.RowIndex].Cells[e.ColumnIndex]; }
+            catch { }
+            _cellMenuCancel.Enabled = IsCellPending(g, e.RowIndex, e.ColumnIndex);
+            _cellMenu.Show(g, g.PointToClient(Cursor.Position));
+        }
+
+        private bool IsCellPending(DataGridView g, int row, int col)
+        {
+            if (_curSheet == null || row < 0 || row >= _rowMap.Length || col < 0) return false;
+            DiffRow dr = _curSheet.Rows[_rowMap[row]];
+            bool isLeft = (g == _gridLeft);
+            int absRow = isLeft ? dr.LeftRow : dr.RightRow;
+            if (absRow < 0) return false;
+            int absCol = _colStart + col;
+            string key = CellKey(_curSheet.Name, absRow, absCol);
+            return (isLeft ? _pendingLeft : _pendingRight).ContainsKey(key);
+        }
+
+        private void CancelOneCell()
+        {
+            if (_ctxGrid == null || _curSheet == null) return;
+            if (_ctxRow < 0 || _ctxRow >= _rowMap.Length || _ctxCol < 0) return;
+            DiffRow dr = _curSheet.Rows[_rowMap[_ctxRow]];
+            bool isLeft = (_ctxGrid == _gridLeft);
+            int absRow = isLeft ? dr.LeftRow : dr.RightRow;
+            if (absRow < 0) return;
+            int absCol = _colStart + _ctxCol;
+            string key = CellKey(_curSheet.Name, absRow, absCol);
+            Dictionary<string, object> pend = isLeft ? _pendingLeft : _pendingRight;
+            if (pend.Remove(key))
+            {
+                _gridLeft.Invalidate();
+                _gridRight.Invalidate();
+                _lblSummary.Text = "셀 병합 취소: " + ColLetter(absCol) + absRow
+                    + "  (대기 좌:" + _pendingLeft.Count + " 우:" + _pendingRight.Count + ")";
+                Logger.Info("셀 병합 취소 " + (isLeft ? "좌" : "우") + " " + key);
+                UpdateButtonStates();
+            }
         }
 
         // ================================================================ N-way / DnD / 온보딩

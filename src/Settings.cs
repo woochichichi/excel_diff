@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -64,6 +65,19 @@ namespace ExcelDiffMerge
         {
             get { return GetBool("HideOnboarding", false); }
             set { SetBool("HideOnboarding", value); }
+        }
+
+        // 그리드 글자 크기(양쪽 그리드 공통). 0 이하면 '미설정'.
+        public float GridFontSize
+        {
+            get
+            {
+                float v;
+                if (float.TryParse(Get("GridFontSize", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out v))
+                    return v;
+                return 0f;
+            }
+            set { Set("GridFontSize", value.ToString(CultureInfo.InvariantCulture)); }
         }
 
         // 최근 비교 이력(최대 10). "left|right" 형태를 개행으로 구분해 저장.
