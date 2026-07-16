@@ -64,6 +64,7 @@ namespace ExcelDiffMerge
         private bool _changesOnly;
         private bool _syncing;
         private bool _busy;
+        private bool _isPreview;   // 파일 열기 직후 미리보기(비교 전) 상태
 
         private readonly Dictionary<string, object> _pendingLeft = new Dictionary<string, object>();
         private readonly Dictionary<string, object> _pendingRight = new Dictionary<string, object>();
@@ -254,13 +255,14 @@ namespace ExcelDiffMerge
         /// <summary>상태에 따라 버튼 활성/비활성 (편의성).</summary>
         private void UpdateButtonStates()
         {
-            bool hasDiff = _diff != null && _curSheet != null;
+            // 미리보기 상태에서는 네비/병합/변경만 비활성(진짜 비교 후에만 의미 있음).
+            bool realDiff = _diff != null && _curSheet != null && !_isPreview;
             bool hasPending = (_pendingLeft.Count + _pendingRight.Count) > 0;
-            if (_btnPrev != null) _btnPrev.Enabled = hasDiff;
-            if (_btnNext != null) _btnNext.Enabled = hasDiff;
-            if (_btnMergeLR != null) _btnMergeLR.Enabled = hasDiff;
-            if (_btnMergeRL != null) _btnMergeRL.Enabled = hasDiff;
-            if (_btnChangesOnly != null) _btnChangesOnly.Enabled = hasDiff;
+            if (_btnPrev != null) _btnPrev.Enabled = realDiff;
+            if (_btnNext != null) _btnNext.Enabled = realDiff;
+            if (_btnMergeLR != null) _btnMergeLR.Enabled = realDiff;
+            if (_btnMergeRL != null) _btnMergeRL.Enabled = realDiff;
+            if (_btnChangesOnly != null) _btnChangesOnly.Enabled = realDiff;
             if (_btnSave != null) _btnSave.Enabled = hasPending;
         }
 
@@ -365,7 +367,93 @@ namespace ExcelDiffMerge
                 Logger.Info("파일 선택(" + (left ? "좌" : "우") + "): " + dlg.FileName);
                 _settings.LastFolder = Path.GetDirectoryName(dlg.FileName);
                 _settings.Save();
+                LoadOneAsync(dlg.FileName, left);   // 열자마자 내용 미리보기
             }
+        }
+
+        /// <summary>파일 1개를 로드해 캐시하고, 미리보기를 그린다(비교 전에도 내용 표시).</summary>
+        private void LoadOneAsync(string path, bool left)
+        {
+            if (_busy) return;
+            SetBusy(true);
+            _progress.Visible = true;
+            _lblSummary.Text = "로드 중… (" + Path.GetFileName(path) + ")";
+            StaTask.Run<WorkbookData>(
+                delegate { return LoadWorkbookSafe(path); },
+                delegate(WorkbookData wb, Exception err)
+                {
+                    BeginInvoke((MethodInvoker)delegate { OnOneLoaded(wb, err, left); });
+                });
+        }
+
+        private void OnOneLoaded(WorkbookData wb, Exception err, bool left)
+        {
+            _progress.Visible = false;
+            SetBusy(false);
+            if (err != null)
+            {
+                Logger.Error("파일 로드 실패(미리보기)", err);
+                _lblSummary.Text = "로드 오류: " + err.Message;
+                MessageBox.Show(this, DescribeError(err), "로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            if (left) _leftWb = wb; else _rightWb = wb;
+            _diff = null;               // 이전 비교 결과 무효화
+            _pendingLeft.Clear();
+            _pendingRight.Clear();
+            ShowPreview();
+        }
+
+        /// <summary>로드된 워크북(들)을 색상 없이 원본 그대로 좌/우 그리드에 표시.</summary>
+        private void ShowPreview()
+        {
+            if (_leftWb == null && _rightWb == null) return;
+            _isPreview = true;
+            _diff = BuildPreviewResult(_leftWb, _rightWb);
+            PopulateTabs();
+            string ls = _leftWb != null ? Path.GetFileName(_leftWb.FilePath) : "(없음)";
+            string rs = _rightWb != null ? Path.GetFileName(_rightWb.FilePath) : "(없음)";
+            _lblSummary.Text = "미리보기 — 좌:" + ls + "  우:" + rs + "   [비교]를 누르면 차이를 표시합니다.";
+            Logger.Info("미리보기 표시 (좌=" + ls + ", 우=" + rs + ")");
+            UpdateButtonStates();
+        }
+
+        /// <summary>비교 전 미리보기용 DiffResult(좌표 정렬, 변경표시 없음)을 만든다.</summary>
+        private static DiffResult BuildPreviewResult(WorkbookData left, WorkbookData right)
+        {
+            DiffResult res = new DiffResult();
+            res.LeftPath = left != null ? left.FilePath : "";
+            res.RightPath = right != null ? right.FilePath : "";
+
+            List<string> names = new List<string>();
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (left != null) foreach (SheetData s in left.Sheets) if (seen.Add(s.Name)) names.Add(s.Name);
+            if (right != null) foreach (SheetData s in right.Sheets) if (seen.Add(s.Name)) names.Add(s.Name);
+
+            foreach (string name in names)
+            {
+                SheetData l = left != null ? left.FindSheet(name) : null;
+                SheetData r = right != null ? right.FindSheet(name) : null;
+                SheetDiff sd = new SheetDiff();
+                sd.Name = name; sd.Left = l; sd.Right = r; sd.Status = SheetStatus.Same;
+
+                int minCol = int.MaxValue, maxCol = 0, minRow = int.MaxValue, maxRow = 0;
+                if (l != null && l.ColCount > 0) { minCol = Math.Min(minCol, l.FirstCol); maxCol = Math.Max(maxCol, l.LastCol); minRow = Math.Min(minRow, l.FirstRow); maxRow = Math.Max(maxRow, l.LastRow); }
+                if (r != null && r.ColCount > 0) { minCol = Math.Min(minCol, r.FirstCol); maxCol = Math.Max(maxCol, r.LastCol); minRow = Math.Min(minRow, r.FirstRow); maxRow = Math.Max(maxRow, r.LastRow); }
+                if (maxCol < minCol) { minCol = 1; maxCol = 0; minRow = 1; maxRow = 0; }
+                sd.MinCol = minCol; sd.MaxCol = maxCol;
+
+                for (int absRow = minRow; absRow <= maxRow; absRow++)
+                {
+                    int lr = (l != null && absRow >= l.FirstRow && absRow <= l.LastRow) ? absRow : -1;
+                    int rr = (r != null && absRow >= r.FirstRow && absRow <= r.LastRow) ? absRow : -1;
+                    DiffRow dr = new DiffRow(lr, rr);
+                    dr.Kind = RowKind.Same;   // 미리보기 → 색상 없음
+                    sd.Rows.Add(dr);
+                }
+                res.Sheets.Add(sd);
+            }
+            return res;
         }
 
         private void StartCompareExcel()
@@ -373,6 +461,13 @@ namespace ExcelDiffMerge
             if (string.IsNullOrEmpty(_leftPath) || string.IsNullOrEmpty(_rightPath))
             {
                 Info("좌측과 우측 파일을 모두 지정하세요."); return;
+            }
+            // 이미 열어둔(캐시된) 워크북이 있으면 재로드 없이 바로 비교 → 빠르고 COM 재열기 없음.
+            if (_leftWb != null && _rightWb != null)
+            {
+                Logger.Info("비교(캐시 사용): 좌=" + _leftPath + " 우=" + _rightPath);
+                RunDiff();
+                return;
             }
             LoadAndCompare(false);
         }
@@ -413,18 +508,27 @@ namespace ExcelDiffMerge
             StaTask.Run<WorkbookData[]>(
                 delegate
                 {
-                    using (IWorkbookReader reader = useCsv ? (IWorkbookReader)new CsvWorkbookReader() : new ExcelComReader())
-                    {
-                        WorkbookData l = reader.LoadWorkbook(lp);
-                        WorkbookData r = reader.LoadWorkbook(rp);
-                        return new WorkbookData[] { l, r };
-                    }
+                    // 파일마다 '자기 리더'로 열고 닫는다 → 한 Excel 세션에서 두 워크북을
+                    // 연달아 여닫을 때 생기던 COM 상태 문제를 근본 회피(로그의 로드 실패 대응).
+                    WorkbookData l = LoadWorkbookSafe(lp);
+                    WorkbookData r = LoadWorkbookSafe(rp);
+                    return new WorkbookData[] { l, r };
                 },
                 delegate(WorkbookData[] res, Exception err)
                 {
                     // STA 워커 스레드 → UI 스레드로 마샬링.
                     BeginInvoke((MethodInvoker)delegate { OnLoaded(res, err); });
                 });
+        }
+
+        /// <summary>경로 1개를 알맞은 리더(CSV 폴더 or Excel COM)로 로드. 리더는 매번 새로 생성/해제.</summary>
+        private static WorkbookData LoadWorkbookSafe(string path)
+        {
+            using (IWorkbookReader reader = Directory.Exists(path)
+                ? (IWorkbookReader)new CsvWorkbookReader() : new ExcelComReader())
+            {
+                return reader.LoadWorkbook(path);
+            }
         }
 
         private void OnLoaded(WorkbookData[] res, Exception err)
@@ -449,6 +553,7 @@ namespace ExcelDiffMerge
         private void RunDiff()
         {
             if (_leftWb == null || _rightWb == null) return;
+            _isPreview = false;
             _pendingLeft.Clear();
             _pendingRight.Clear();
             try
@@ -974,12 +1079,16 @@ namespace ExcelDiffMerge
             {
                 _leftPath = files[0]; _lblLeftPath.Text = files[0];
                 _rightPath = files[1]; _lblRightPath.Text = files[1];
-                StartCompareExcel();
+                Logger.Info("드래그앤드롭 2파일 → 로드/비교");
+                LoadAndCompare(false);
             }
             else
             {
-                if (string.IsNullOrEmpty(_leftPath)) { _leftPath = files[0]; _lblLeftPath.Text = files[0]; }
+                bool left = string.IsNullOrEmpty(_leftPath);
+                if (left) { _leftPath = files[0]; _lblLeftPath.Text = files[0]; }
                 else { _rightPath = files[0]; _lblRightPath.Text = files[0]; }
+                Logger.Info("드래그앤드롭 1파일(" + (left ? "좌" : "우") + ") → 미리보기");
+                LoadOneAsync(files[0], left);
             }
         }
 

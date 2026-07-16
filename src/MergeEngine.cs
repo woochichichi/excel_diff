@@ -193,21 +193,22 @@ namespace ExcelDiffMerge
 
         private static void Release(ref dynamic o)
         {
-            if (o == null) return;
-            object obj = o; // dynamic 디스패치 회피용 캐스팅
-            try { if (obj != null && Marshal.IsComObject(obj)) Marshal.ReleaseComObject(obj); }
-            catch { }
+            // dynamic '== null' 은 끊긴 COM 객체에서 바인더 예외(RPC_E_INVALID_OBJECT) 위험 → (object) 로 벗겨서 처리.
+            object obj = (object)o;
             o = null;
+            if (obj == null) return;
+            try { if (Marshal.IsComObject(obj)) Marshal.ReleaseComObject(obj); }
+            catch { }
         }
 
         public void Dispose()
         {
-            if (_xl != null)
+            object app = (object)_xl;   // dynamic 벗겨내기(동적 == 회피)
+            _xl = null;
+            if (app != null)
             {
-                try { _xl.Quit(); } catch { }
-                object app = _xl;
-                try { if (app != null && Marshal.IsComObject(app)) Marshal.ReleaseComObject(app); } catch { }
-                _xl = null;
+                try { ((dynamic)app).Quit(); } catch { }
+                try { if (Marshal.IsComObject(app)) Marshal.ReleaseComObject(app); } catch { }
             }
             GC.Collect();
             GC.WaitForPendingFinalizers();

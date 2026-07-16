@@ -252,33 +252,36 @@ namespace ExcelDiffMerge
 
         private static void Release(ref dynamic o)
         {
-            if (o == null) return;
-            object obj = o; // dynamic 디스패치 회피용 캐스팅
+            // 중요: dynamic 에 '== null' 같은 동적 연산을 하면, 이미 끊긴 COM 객체(RPC_E_INVALID_OBJECT)
+            // 에서 DLR 바인더가 QueryInterface 를 시도하다 예외가 난다.
+            // → 먼저 명시적 (object) 참조변환으로 dynamic 을 벗겨낸 뒤 정적 코드로만 처리한다.
+            object obj = (object)o;
+            o = null;
+            if (obj == null) return;
             try
             {
-                if (obj != null && Marshal.IsComObject(obj))
+                if (Marshal.IsComObject(obj))
                     Marshal.ReleaseComObject(obj);
             }
             catch { }
-            o = null;
         }
 
         public void Dispose()
         {
             RestoreFastOptions();
+            object app = (object)_xl;   // dynamic 벗겨내기(동적 == 회피)
+            _xl = null;
             // AutomationSecurity 는 프로세스 전역 → 원복(조사 반영).
-            try { if (_xl != null) _xl.AutomationSecurity = _savedAutomationSecurity; } catch { }
-            if (_xl != null)
+            try { if (app != null) ((dynamic)app).AutomationSecurity = _savedAutomationSecurity; } catch { }
+            if (app != null)
             {
-                try { _xl.Quit(); } catch { }
-                object app = _xl;
+                try { ((dynamic)app).Quit(); } catch { }
                 try
                 {
-                    if (app != null && Marshal.IsComObject(app))
+                    if (Marshal.IsComObject(app))
                         Marshal.ReleaseComObject(app);
                 }
                 catch { }
-                _xl = null;
             }
             // 남은 RCW 강제 수거 → 좀비 EXCEL.EXE 방지 보강.
             GC.Collect();
