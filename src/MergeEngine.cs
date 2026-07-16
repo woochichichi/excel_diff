@@ -59,6 +59,18 @@ namespace ExcelDiffMerge
         /// </summary>
         public void ApplyAndSave(string targetPath, List<MergeItem> items, bool createBackup, out string backupPath)
         {
+            List<string> skippedSheets;
+            ApplyAndSave(targetPath, items, createBackup, out backupPath, out skippedSheets);
+        }
+
+        /// <summary>
+        /// ApplyAndSave 확장: 대상 워크북에 없는 시트는 건너뛰고, 그 시트명 목록을 skippedSheets 로 돌려준다(B2).
+        /// → base 에 없는 시트의 셀을 채택했더라도 정상 셀 저장이 통째로 실패하지 않는다.
+        /// </summary>
+        public void ApplyAndSave(string targetPath, List<MergeItem> items, bool createBackup,
+            out string backupPath, out List<string> skippedSheets)
+        {
+            skippedSheets = new List<string>();
             backupPath = null;
             Logger.Info("병합 저장 시작: " + targetPath + " (셀 " + (items != null ? items.Count : 0)
                         + "개, 백업=" + createBackup + ")");
@@ -89,7 +101,16 @@ namespace ExcelDiffMerge
                     dynamic ws = null;
                     try
                     {
-                        ws = sheets[kv.Key];
+                        // 대상 워크북에 없는 시트는 인덱서가 예외를 던진다.
+                        // 그 예외로 저장 전체가 실패하지 않도록 잡아서 건너뛰고 목록에 남긴다(B2).
+                        try { ws = sheets[kv.Key]; }
+                        catch (Exception exSheet)
+                        {
+                            Logger.Error("저장 불가 시트(base에 없음) 건너뜀: " + kv.Key, exSheet);
+                            skippedSheets.Add(kv.Key);
+                            ws = null;
+                        }
+                        if ((object)ws == null) continue;
                         WriteCells(ws, kv.Value);
                     }
                     finally

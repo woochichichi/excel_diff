@@ -52,6 +52,36 @@ namespace ExcelDiffMerge
             CountRowKinds(s1k, out ka, out kd, out kc);
             Check(ka >= 1 && kd >= 1, "Sheet1(key): 키기준 삽입/삭제 인식");
 
+            // B4 회귀: 숫자 타입(double 100) vs 문자열 "100" → 타입 변경으로 '다름' 감지.
+            Check(!DiffEngine.ValueEquals(100.0, "100"),
+                "B4: 숫자 100 vs 문자열 \"100\" → 값 다름(타입 변경) 감지");
+            Check(DiffEngine.CellStatusOf(100.0, null, "100", null) == CellStatus.Changed,
+                "B4: 숫자 100 vs 문자열 \"100\" → 셀 상태 Changed");
+            // 회귀 방지: 같은 타입끼리는 기존 동작 유지.
+            Check(DiffEngine.ValueEquals(100.0, 100.0), "B4: 숫자 100 vs 숫자 100 → 같음(회귀 방지)");
+            Check(DiffEngine.ValueEquals("abc", "abc"), "B4: 문자 abc vs 문자 abc → 같음(회귀 방지)");
+            Check(!DiffEngine.ValueEquals("100", "100.0"), "B4: 문자열끼리는 문자열 비교(\"100\"≠\"100.0\")");
+
+            // B2 순수 로직: 버전에만 있는 시트는 InBase=false → 채택/저장 차단 대상.
+            WorkbookData b2base = new WorkbookData("<b2-base>");
+            b2base.Sheets.Add(Sheet("Common", new string[][] {
+                new string[]{"A","B"}, new string[]{"1","2"},
+            }));
+            WorkbookData b2ver = new WorkbookData("<b2-ver>");
+            b2ver.Sheets.Add(Sheet("Common", new string[][] {
+                new string[]{"A","B"}, new string[]{"1","9"},
+            }));
+            b2ver.Sheets.Add(Sheet("VerOnly", new string[][] {
+                new string[]{"X"}, new string[]{"7"},
+            }));
+            List<WorkbookData> b2versions = new List<WorkbookData>();
+            b2versions.Add(b2ver);
+            NWayResult b2res = NWayDiffEngine.Compare(b2base, b2versions);
+            NWaySheetDiff nCommon = FindNWay(b2res, "Common");
+            NWaySheetDiff nVerOnly = FindNWay(b2res, "VerOnly");
+            Check(nCommon != null && nCommon.InBase, "B2: base 에 있는 시트 InBase=true");
+            Check(nVerOnly != null && !nVerOnly.InBase, "B2: 버전 전용 시트 InBase=false(저장 차단 대상)");
+
             // ColLetter 왕복.
             Check(MainForm.ColLetter(1) == "A" && MainForm.ColLetter(27) == "AA", "ColLetter 변환");
             Check(MainForm.ParseColLetter("AA") == 27 && MainForm.ParseColLetter("A") == 1, "ParseColLetter 역변환");
@@ -70,6 +100,13 @@ namespace ExcelDiffMerge
         private static SheetDiff Find(DiffResult d, string name)
         {
             foreach (SheetDiff sd in d.Sheets)
+                if (sd.Name == name) return sd;
+            return null;
+        }
+
+        private static NWaySheetDiff FindNWay(NWayResult d, string name)
+        {
+            foreach (NWaySheetDiff sd in d.Sheets)
                 if (sd.Name == name) return sd;
             return null;
         }

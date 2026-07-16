@@ -214,24 +214,40 @@ namespace ExcelDiffMerge
 
             string basePath = _basePath;
             List<string> versionPaths = new List<string>(_versionPaths);
-            bool useCsv = Directory.Exists(basePath);
 
-            // COM 로드는 STA 전용 스레드에서(조사 반영). CSV 폴더면 CsvReader.
+            // COM 로드는 STA 전용 스레드에서(조사 반영).
+            // 파일마다 '자기 리더'로 열고 닫는다 → 한 Excel 세션에서 여러 워크북을 연달아
+            // 여닫을 때 생기던 COM 상태 문제를 근본 회피(MainForm.LoadWorkbookSafe 패턴, B3).
             StaTask.Run<NWayResult>(
                 delegate
                 {
-                    using (IWorkbookReader reader = useCsv ? (IWorkbookReader)new CsvWorkbookReader() : new ExcelComReader())
-                    {
-                        WorkbookData baseWb = reader.LoadWorkbook(basePath);
-                        List<WorkbookData> versions = new List<WorkbookData>();
-                        foreach (string p in versionPaths) versions.Add(reader.LoadWorkbook(p));
-                        return NWayDiffEngine.Compare(baseWb, versions);
-                    }
+                    WorkbookData baseWb = LoadWorkbookSafe(basePath);
+                    List<WorkbookData> versions = new List<WorkbookData>();
+                    foreach (string p in versionPaths) versions.Add(LoadWorkbookSafe(p));
+                    return NWayDiffEngine.Compare(baseWb, versions);
                 },
                 delegate(NWayResult res, Exception err)
                 {
                     BeginInvoke((MethodInvoker)delegate { OnLoaded(res, err); });
                 });
+        }
+
+        /// <summary>경로 1개를 확장자에 맞는 리더로 로드. 리더는 매번 새로 생성/해제(B3).
+        /// MainForm.LoadWorkbookSafe/MakeReader 와 동일 규칙(MainForm 은 수정 금지라 여기 재구현).</summary>
+        private static WorkbookData LoadWorkbookSafe(string path)
+        {
+            using (IWorkbookReader reader = MakeReader(path))
+            {
+                return reader.LoadWorkbook(path);
+            }
+        }
+
+        private static IWorkbookReader MakeReader(string path)
+        {
+            if (Directory.Exists(path)) return new CsvWorkbookReader();   // CSV 폴더(테스트)
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".doc" || ext == ".docx" || ext == ".docm") return new WordComReader(); // Word 문서
+            return new ExcelComReader();                                  // Excel(기본)
         }
 
         private void OnLoaded(NWayResult res, Exception err)
@@ -318,6 +334,16 @@ namespace ExcelDiffMerge
             NWayCell cell = _grid.CurrentRow.Tag as NWayCell;
             if (cell == null) return;
 
+            // base 에 없는 시트(버전에만 존재)의 셀은 base 파일에 저장할 수 없으므로 채택 차단(B2).
+            if (!_curSheet.InBase)
+            {
+                MessageBox.Show(this,
+                    "이 시트 '" + _curSheet.Name + "' 은(는) base 파일에 없는 시트라 저장할 수 없습니다.\r\n"
+                    + "(버전 파일에만 존재하는 시트입니다. base 에 미리 시트를 추가한 뒤 다시 시도하세요.)",
+                    "채택 불가", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             // 후보값 수집(중복 제거).
             List<object> candidates = new List<object>();
             List<string> labels = new List<string>();
@@ -382,13 +408,19 @@ namespace ExcelDiffMerge
 
             try
             {
+                List<string> skippedSheets;
                 using (MergeEngine me = new MergeEngine())
                 {
                     string backupPath;
-                    me.ApplyAndSave(_basePath, items, backup, out backupPath);
+                    me.ApplyAndSave(_basePath, items, backup, out backupPath, out skippedSheets);
                 }
                 _adopt.Clear();
-                MessageBox.Show(this, "base 파일에 저장 완료.", "완료",
+                string msg = "base 파일에 저장 완료.";
+                if (skippedSheets != null && skippedSheets.Count > 0)
+                    msg += "\r\n\r\n※ 저장 불가 시트 " + skippedSheets.Count
+                         + "개(base에 없음): " + string.Join(", ", skippedSheets.ToArray())
+                         + "\r\n  → 해당 시트의 셀은 저장되지 않았습니다. 나머지는 정상 저장되었습니다.";
+                MessageBox.Show(this, msg, "완료",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)

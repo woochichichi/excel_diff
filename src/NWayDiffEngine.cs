@@ -29,6 +29,8 @@ namespace ExcelDiffMerge
         public List<NWayCell> Cells = new List<NWayCell>();
         public int ChangedCount;
         public int ConflictCount;
+        // 이 시트가 base 워크북에 존재하는지. false 면 버전에만 있는 시트라 base 에 병합/저장 불가(B2).
+        public bool InBase;
     }
 
     public sealed class NWayResult
@@ -71,6 +73,7 @@ namespace ExcelDiffMerge
                 SheetData bs = baseWb.FindSheet(name);
                 NWaySheetDiff nsd = new NWaySheetDiff();
                 nsd.Name = name;
+                nsd.InBase = (bs != null); // base 에 있는 시트만 저장 가능(B2)
 
                 // union 경계 산정.
                 int minRow = int.MaxValue, minCol = int.MaxValue, maxRow = 0, maxCol = 0;

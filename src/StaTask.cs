@@ -21,7 +21,19 @@ namespace ExcelDiffMerge
                 Exception error = null;
                 try { result = func(); }
                 catch (Exception ex) { error = ex; }
-                if (onDone != null) onDone(result, error);
+                // onDone 은 보통 폼의 BeginInvoke 로 UI 스레드에 마샬링한다.
+                // 로드 중 사용자가 폼을 닫으면 폼/핸들이 사라져 ObjectDisposedException/
+                // InvalidOperationException 이 STA 워커의 '미처리 예외'가 되어 프로세스가 죽는다.
+                // → 폼이 이미 사라진 정상 종료 경로이므로 로깅만 하고 무시한다(B1).
+                if (onDone != null)
+                {
+                    try { onDone(result, error); }
+                    catch (Exception exDone)
+                    {
+                        try { Logger.Error("완료 콜백 실행 실패(폼이 닫혔을 수 있음, 무시)", exDone); }
+                        catch { }
+                    }
+                }
             });
             t.IsBackground = true;
             t.SetApartmentState(ApartmentState.STA);

@@ -97,6 +97,11 @@ namespace ExcelDiffMerge
                 {
                     // DRM 권한없음/잠김 등 → HRESULT 포함 로깅 후 상위로(§7, §11).
                     Logger.Error("COM Open 실패: " + path, exOpen);
+                    // 대표 HRESULT 를 한국어 안내로 매핑해 예외 메시지 앞부분에 실어
+                    // 기존 UI(MainForm.DescribeError)에도 그대로 표시되게 한다. HRESULT 로깅은 위에서 유지.
+                    string ko = DescribeComError(exOpen);
+                    if (ko != null)
+                        throw new InvalidOperationException(ko + "\r\n(원본 오류: " + exOpen.Message + ")", exOpen);
                     throw;
                 }
 
@@ -247,6 +252,27 @@ namespace ExcelDiffMerge
                 for (int c = 0; c < cols; c++)
                     dst[r, c] = src[r, c];
             return dst;
+        }
+
+        /// <summary>
+        /// COM Open 실패 예외의 HRESULT 를 대표 케이스별 한국어 안내로 매핑한다.
+        /// 매칭되는 케이스가 없으면 null 을 돌려 호출부가 원본 예외를 그대로 던지게 한다.
+        /// </summary>
+        private static string DescribeComError(Exception ex)
+        {
+            COMException ce = ex as COMException;
+            if (ce == null) return null;
+            int hr = ce.ErrorCode;
+            // E_ACCESSDENIED
+            if (hr == unchecked((int)0x80070005))
+                return "DRM 열람 권한이 없거나 접근이 거부된 파일입니다.";
+            // Excel 자동화 일반 오류(파일 열기 실패/잠김 등)
+            if (hr == unchecked((int)0x800A03EC))
+                return "파일이 다른 곳(Excel)에서 열려 있거나 열 수 없는 파일입니다.";
+            // RPC_E_INVALID_OBJECT / RPC_E_DISCONNECTED
+            if (hr == unchecked((int)0x80010114) || hr == unchecked((int)0x80010108))
+                return "Excel COM 연결이 끊어졌습니다(Excel 재시작 후 재시도).";
+            return null;
         }
 
         internal static bool IsEmpty(object v)

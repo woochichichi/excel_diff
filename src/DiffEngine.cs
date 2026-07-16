@@ -122,12 +122,18 @@ namespace ExcelDiffMerge
         {
             if (a == null && b == null) return true;
             if (a == null || b == null) return false;
-            if (IsNumeric(a) && IsNumeric(b))
+            bool na = IsNumeric(a);
+            bool nb = IsNumeric(b);
+            if (na && nb)
             {
                 double da = Convert.ToDouble(a, CultureInfo.InvariantCulture);
                 double db = Convert.ToDouble(b, CultureInfo.InvariantCulture);
                 return da == db;
             }
+            // 한쪽만 숫자 타입(double 등)이고 다른쪽이 비숫자(문자열 "100" 등)이면
+            // 타입 변경이므로 '다름'으로 판정한다(B4). 문자열 비교로 넘겨 Same 처리하지 않는다.
+            // (null/빈값은 위/호출부 IsEmpty 에서 이미 처리되므로 여기 도달하지 않는다.)
+            if (na != nb) return false;
             if (a is bool && b is bool) return (bool)a == (bool)b;
             if (a is DateTime && b is DateTime) return (DateTime)a == (DateTime)b;
             return string.Equals(ToText(a), ToText(b), StringComparison.Ordinal);
