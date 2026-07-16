@@ -31,9 +31,11 @@ namespace ExcelDiffMerge
         private ToolStrip _tool2;
         private ToolStripButton _btnPrev;
         private ToolStripButton _btnNext;
-        private ToolStripButton _btnMergeLR;
-        private ToolStripButton _btnMergeRL;
         private ToolStripButton _btnSave;
+        // 두 그리드 사이 중앙 세로 스트립의 큰 화살표 병합 버튼(U-병합동선)
+        private Button _btnMergeToR;   // [→] 왼쪽 값을 오른쪽에
+        private Button _btnMergeToL;   // [←] 오른쪽 값을 왼쪽에
+        private Panel _mergeStrip;
         private ToolStripButton _btnMergeAllLR;
         private ToolStripButton _btnMergeAllRL;
         private ToolStripButton _btnChangeList;
@@ -73,6 +75,42 @@ namespace ExcelDiffMerge
         private Button _btnSaveLeftFile;
         private Button _btnSaveRightFile;
         private ToolTip _pathTip;
+
+        // 온보딩 안내 라벨(파일 없을 때 그리드 영역에 표시)
+        private Label _onboard;
+
+        // 셀 드래그 → 반대쪽 병합 등록(U-드래그) 상태
+        private bool _dragArmed;
+        private Point _dragStart;
+        private DataGridView _dragGrid;
+
+        // 자동 비교 재진입 가드(저장 후 재로드/재비교 흐름과 충돌 방지)
+        private bool _autoComparing;
+
+        // Ctrl+Z 되돌리기(병합 대기 등록 언두) 스택
+        private readonly Stack<UndoEntry> _undo = new Stack<UndoEntry>();
+
+        /// <summary>드래그 병합 식별용 토큰(파일 드롭과 데이터 타입 구분).</summary>
+        private sealed class CellDragToken
+        {
+            public readonly bool SourceIsLeft;
+            public CellDragToken(bool sourceIsLeft) { SourceIsLeft = sourceIsLeft; }
+        }
+
+        /// <summary>병합 대기 등록 한 번(화살표/더블클릭/드래그/전체병합)을 되돌릴 언두 단위.</summary>
+        private sealed class UndoEntry
+        {
+            public string Label;
+            public List<UndoCell> Cells = new List<UndoCell>();
+        }
+
+        private sealed class UndoCell
+        {
+            public bool IsLeft;      // 어느 쪽 pending 인지(true=좌 pending)
+            public string Key;
+            public bool Existed;     // 등록 전 이미 키가 있었는지
+            public object PrevValue; // 있었다면 이전 값
+        }
 
         // 상세 패널 중복 갱신 방지(같은 셀 재선택 시 재계산 생략 — 속도)
         private int _lastDetailRow = -1;
@@ -143,9 +181,10 @@ namespace ExcelDiffMerge
             primary.Padding = new Padding(3, 2, 3, 2);
             primary.Renderer = new ToolStripProfessionalRenderer();
 
+            // 좌상단→우하단 읽기 흐름: [좌측 열기][우측 열기] | [이전차이][다음차이] | [다시 비교]
+            // (병합 화살표는 중앙 세로 스트립으로, 개별 저장은 각 그리드 하단으로 이동)
             primary.Items.Add(BigBtn("좌측 열기", "비교 기준(왼쪽) 파일 열기 — Ctrl+O", delegate { OpenFile(true); }, false));
             primary.Items.Add(BigBtn("우측 열기", "비교 대상(오른쪽) 파일 열기 — Ctrl+Shift+O", delegate { OpenFile(false); }, false));
-            primary.Items.Add(BigBtn("비교", "두 파일을 비교 (가장 중요) — F5", delegate { StartCompareExcel(); }, true));
             primary.Items.Add(new ToolStripSeparator());
             // 차이 이동은 화살표 없이 텍스트로.
             _btnPrev = BigBtn("이전차이", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
@@ -153,12 +192,11 @@ namespace ExcelDiffMerge
             primary.Items.Add(_btnPrev);
             primary.Items.Add(_btnNext);
             primary.Items.Add(new ToolStripSeparator());
-            // 병합: 부등호가 값이 가는 '방향'(목적지)을 가리킴.  '왼쪽 > 오른쪽' = 왼쪽값을 오른쪽으로.
-            _btnMergeLR = BigBtn("왼쪽 > 오른쪽", "선택한 셀: 왼쪽(좌) 값을 오른쪽(우)에 적용(병합 대기) — Alt+→", delegate { MergeSelected(true); }, false);
-            _btnMergeRL = BigBtn("왼쪽 < 오른쪽", "선택한 셀: 오른쪽(우) 값을 왼쪽(좌)에 적용(병합 대기) — Alt+←", delegate { MergeSelected(false); }, false);
-            _btnSave = BigBtn("저장", "양쪽(좌·우) 병합 결과를 각 원본 파일에 모두 저장 (Ctrl+S). 한쪽만 저장하려면 경로 옆 [이 파일에 저장]을 쓰세요.", delegate { SaveMerges(); }, true);
-            primary.Items.Add(_btnMergeLR);
-            primary.Items.Add(_btnMergeRL);
+            // 두 파일이 모두 로드되면 자동 비교되므로 이 버튼은 '다시 비교' 용도.
+            primary.Items.Add(BigBtn("다시 비교", "두 파일을 다시 비교 (자동 비교와 동일) — F5", delegate { StartCompareExcel(); }, true));
+            primary.Items.Add(new ToolStripSeparator());
+            // 저장(양쪽)은 각 그리드 하단 [이 파일에 저장]과 중복 → 덜 강조(굵기 제거).
+            _btnSave = BigBtn("저장(양쪽)", "양쪽(좌·우) 병합 결과를 각 원본 파일에 모두 저장 (Ctrl+S). 한쪽만 저장하려면 각 화면 하단의 [이 파일에 저장]을 쓰세요.", delegate { SaveMerges(); }, false);
             primary.Items.Add(_btnSave);
 
             // ===== 보조 툴바(옵션 — 작게) =====
@@ -247,55 +285,103 @@ namespace ExcelDiffMerge
             pathPanel.Dock = DockStyle.Top;
             pathPanel.Height = 26;
 
-            // 좌측 절반(경로 라벨 + [이 파일에 저장])
+            // 좌측 절반(경로 라벨) — [이 파일에 저장] 버튼은 각 그리드 하단으로 이동(U-저장동선)
             Panel leftHalf = new Panel();
             leftHalf.Dock = DockStyle.Left; leftHalf.Width = 640;
             _lblLeftPath = new Label();
             _lblLeftPath.Text = "(좌측 파일 없음)";
             _lblLeftPath.Dock = DockStyle.Fill;
             _lblLeftPath.TextAlign = ContentAlignment.MiddleLeft; _lblLeftPath.AutoEllipsis = true;
-            _btnSaveLeftFile = new Button();
-            _btnSaveLeftFile.Text = "이 파일에 저장";
-            _btnSaveLeftFile.Dock = DockStyle.Right; _btnSaveLeftFile.Width = 150;
-            _btnSaveLeftFile.Enabled = false;
-            _btnSaveLeftFile.Click += delegate { SaveMergesSide(true); };
             leftHalf.Controls.Add(_lblLeftPath);
-            leftHalf.Controls.Add(_btnSaveLeftFile);
 
-            // 우측 절반(경로 라벨 + [이 파일에 저장])
+            // 우측 절반(경로 라벨)
             Panel rightHalf = new Panel();
             rightHalf.Dock = DockStyle.Fill;
             _lblRightPath = new Label();
             _lblRightPath.Text = "(우측 파일 없음)";
             _lblRightPath.Dock = DockStyle.Fill;
             _lblRightPath.TextAlign = ContentAlignment.MiddleLeft; _lblRightPath.AutoEllipsis = true;
+            rightHalf.Controls.Add(_lblRightPath);
+
+            // 파일별 저장 버튼(그리드 하단에 배치되지만 생성은 여기서).
+            _btnSaveLeftFile = new Button();
+            _btnSaveLeftFile.Text = "이 파일에 저장";
+            _btnSaveLeftFile.Dock = DockStyle.Right; _btnSaveLeftFile.Width = 170;
+            _btnSaveLeftFile.Enabled = false;
+            _btnSaveLeftFile.Click += delegate { SaveMergesSide(true); };
             _btnSaveRightFile = new Button();
             _btnSaveRightFile.Text = "이 파일에 저장";
-            _btnSaveRightFile.Dock = DockStyle.Right; _btnSaveRightFile.Width = 150;
+            _btnSaveRightFile.Dock = DockStyle.Right; _btnSaveRightFile.Width = 170;
             _btnSaveRightFile.Enabled = false;
             _btnSaveRightFile.Click += delegate { SaveMergesSide(false); };
-            rightHalf.Controls.Add(_lblRightPath);
-            rightHalf.Controls.Add(_btnSaveRightFile);
 
             pathPanel.Controls.Add(rightHalf);
             pathPanel.Controls.Add(leftHalf);
 
-            // ----- 좌우 그리드 + 마커바
+            // ----- 좌우 그리드 + 마커바 + 중앙 병합 스트립 + 그리드 하단 저장바
             SplitContainer split = new SplitContainer();
             split.Dock = DockStyle.Fill;
             split.SplitterWidth = 4;
             _gridLeft = MakeGrid();
             _gridRight = MakeGrid();
+
+            // 좌 그리드 하단: [이 파일에 저장] (우측 정렬)
+            Panel bottomLeft = new Panel();
+            bottomLeft.Dock = DockStyle.Bottom; bottomLeft.Height = 30;
+            bottomLeft.Controls.Add(_btnSaveLeftFile);
+            // 도킹 순서: Fill 먼저, 그 다음 Bottom(반대로 처리되어 Bottom 이 먼저 자리 잡음).
             split.Panel1.Controls.Add(_gridLeft);
+            split.Panel1.Controls.Add(bottomLeft);
 
             _marker = new MarkerBar();
             _marker.Dock = DockStyle.Right;
             _marker.Width = 20; // 더 잘 보이게
             _marker.OnSeek = delegate(float pos) { SeekTo(pos); };
+
+            // 두 그리드 사이 중앙 세로 스트립(병합 화살표).
+            _mergeStrip = new Panel();
+            _mergeStrip.Dock = DockStyle.Left;
+            _mergeStrip.Width = 42;
+            _mergeStrip.BackColor = SystemColors.Control;
+            _btnMergeToR = MakeArrowButton("→", "선택 셀의 왼쪽 값을 오른쪽에 복사(병합 대기) — Alt+→", delegate { MergeSelected(true); });
+            _btnMergeToL = MakeArrowButton("←", "선택 셀의 오른쪽 값을 왼쪽에 복사(병합 대기) — Alt+←", delegate { MergeSelected(false); });
+            _mergeStrip.Controls.Add(_btnMergeToR);
+            _mergeStrip.Controls.Add(_btnMergeToL);
+            _mergeStrip.Resize += delegate { LayoutMergeStrip(); };
+
+            // 우 그리드 하단: [이 파일에 저장] (우측 정렬)
+            Panel bottomRight = new Panel();
+            bottomRight.Dock = DockStyle.Bottom; bottomRight.Height = 30;
+            bottomRight.Controls.Add(_btnSaveRightFile);
+
+            // Panel2 도킹: Fill(그리드) 먼저 → Bottom(저장바) → Left(병합스트립) → Right(마커).
+            // 뒤에 추가된 것이 먼저 가장자리를 차지하므로 마커가 오른쪽 전체높이를 잡고,
+            // 저장바는 그 사이 폭만 차지해 저장 버튼이 그리드 오른쪽 끝에 정렬된다.
             split.Panel2.Controls.Add(_gridRight);
+            split.Panel2.Controls.Add(bottomRight);
+            split.Panel2.Controls.Add(_mergeStrip);
             split.Panel2.Controls.Add(_marker);
 
-            Load += delegate { try { split.SplitterDistance = split.Width / 2; } catch { } };
+            // 그리드 영역 전체를 덮는 온보딩 안내(파일 없을 때만 표시).
+            // split 은 Dock=Fill 로 항상 채우고, 온보딩 라벨은 도킹에 참여시키지 않고(Dock=None)
+            // 앞면(z-order 최상단)에 올려 크기만 그리드 영역에 맞춘다 → 두 Fill 충돌 회피.
+            Panel gridHost = new Panel();
+            gridHost.Dock = DockStyle.Fill;
+            gridHost.Controls.Add(split);
+            _onboard = new Label();
+            _onboard.TextAlign = ContentAlignment.MiddleCenter;
+            _onboard.Font = new Font("Segoe UI", 13F, FontStyle.Regular);
+            _onboard.ForeColor = Color.FromArgb(90, 90, 90);
+            _onboard.BackColor = SystemColors.Window;
+            _onboard.Text = "① 왼쪽 파일 열기  →  ② 오른쪽 파일 열기  →  자동으로 비교됩니다\r\n\r\n"
+                          + "(파일을 이 창에 끌어다 놓아도 됩니다. 두 개를 함께 놓아도 됩니다.)";
+            gridHost.Controls.Add(_onboard);
+            _onboard.BringToFront();
+            Panel gridHostRef = gridHost;
+            gridHost.Resize += delegate { if (_onboard != null) _onboard.Bounds = gridHostRef.ClientRectangle; };
+            _onboard.Bounds = gridHost.ClientRectangle;
+
+            Load += delegate { try { split.SplitterDistance = split.Width / 2; } catch { } LayoutMergeStrip(); if (_onboard != null) _onboard.Bounds = gridHostRef.ClientRectangle; };
 
             // ----- 변경 목록 패널(우측): 클릭하면 해당 셀로 점프
             _changePanel = BuildChangePanel();
@@ -332,7 +418,7 @@ namespace ExcelDiffMerge
             AddStatusLegend(status, ColGap, "빈칸");
 
             // 도킹 z-order: Fill 먼저, 그 다음 Right(중앙밴드), 이어서 Top(안쪽→바깥쪽), 끝에 Bottom.
-            Controls.Add(split);        // Fill
+            Controls.Add(gridHost);     // Fill (split + 온보딩 오버레이)
             Controls.Add(_changePanel); // Right (그리드 오른쪽, 변경목록)
             Controls.Add(pathPanel);    // Top
             Controls.Add(_tabs);        // Top
@@ -354,6 +440,8 @@ namespace ExcelDiffMerge
             // 그리드 글자 크기 복원(U5). 저장값 없으면 기본 9.
             float savedFont = _settings.GridFontSize;
             ApplyGridFont(savedFont >= 6f ? savedFont : 9f);
+
+            UpdateOnboardingVisibility();
 
             FormClosing += delegate { SaveWindow(); };
         }
@@ -539,6 +627,43 @@ namespace ExcelDiffMerge
             return b;
         }
 
+        /// <summary>중앙 세로 스트립의 큰 화살표 병합 버튼.</summary>
+        private Button MakeArrowButton(string text, string tip, EventHandler h)
+        {
+            Button b = new Button();
+            b.Text = text;
+            b.Width = 34; b.Height = 40;
+            b.Font = new Font("Segoe UI", 14F, FontStyle.Bold);
+            b.FlatStyle = FlatStyle.Standard;
+            b.TabStop = false;   // 그리드 선택 흐름을 방해하지 않게
+            if (h != null) b.Click += h;
+            if (_pathTip == null) _pathTip = new ToolTip();
+            _pathTip.SetToolTip(b, tip);
+            return b;
+        }
+
+        /// <summary>중앙 스트립의 두 화살표 버튼을 세로 중앙에 배치.</summary>
+        private void LayoutMergeStrip()
+        {
+            if (_mergeStrip == null || _btnMergeToR == null || _btnMergeToL == null) return;
+            int w = _mergeStrip.ClientSize.Width;
+            int gap = 8;
+            int totalH = _btnMergeToR.Height + gap + _btnMergeToL.Height;
+            int top = Math.Max(4, (_mergeStrip.ClientSize.Height - totalH) / 2);
+            int x = Math.Max(2, (w - _btnMergeToR.Width) / 2);
+            _btnMergeToR.Left = x; _btnMergeToR.Top = top;
+            _btnMergeToL.Left = x; _btnMergeToL.Top = top + _btnMergeToR.Height + gap;
+        }
+
+        /// <summary>파일이 하나도 로드되지 않았을 때만 온보딩 안내를 보여준다.</summary>
+        private void UpdateOnboardingVisibility()
+        {
+            if (_onboard == null) return;
+            bool none = _leftWb == null && _rightWb == null;
+            _onboard.Visible = none;
+            if (none) _onboard.BringToFront();
+        }
+
         /// <summary>상태에 따라 버튼 활성/비활성 (편의성).</summary>
         private void UpdateButtonStates()
         {
@@ -548,8 +673,8 @@ namespace ExcelDiffMerge
             bool hasPending = (_pendingLeft.Count + _pendingRight.Count) > 0;
             if (_btnPrev != null) _btnPrev.Enabled = realDiff;
             if (_btnNext != null) _btnNext.Enabled = realDiff;
-            if (_btnMergeLR != null) _btnMergeLR.Enabled = canMerge;
-            if (_btnMergeRL != null) _btnMergeRL.Enabled = canMerge;
+            if (_btnMergeToR != null) _btnMergeToR.Enabled = canMerge;
+            if (_btnMergeToL != null) _btnMergeToL.Enabled = canMerge;
             if (_btnMergeAllLR != null) _btnMergeAllLR.Enabled = canMerge;
             if (_btnMergeAllRL != null) _btnMergeAllRL.Enabled = canMerge;
             if (_btnChangesOnly != null) _btnChangesOnly.Enabled = realDiff;
@@ -670,6 +795,14 @@ namespace ExcelDiffMerge
             g.MouseWheel += Grid_MouseWheel;                              // Ctrl+휠 글자크기(U5)
             g.CellMouseDown += Grid_CellMouseDown;                        // 우클릭 병합취소(U8)
             g.ColumnHeaderMouseDoubleClick += Grid_ColHeaderDoubleClick;  // 열 자동맞춤(U9)
+            g.CellDoubleClick += Grid_CellDoubleClick;                    // 더블클릭=반대쪽 반영(U-더블클릭)
+            // 셀 드래그 → 반대쪽 병합 등록(U-드래그). 파일 드롭과는 데이터 타입으로 구분.
+            g.MouseDown += Grid_DragMouseDown;
+            g.MouseMove += Grid_DragMouseMove;
+            g.MouseUp += Grid_DragMouseUp;
+            g.AllowDrop = true;
+            g.DragOver += Grid_DragOver;
+            g.DragDrop += Grid_DragDrop;
             return g;
         }
 
@@ -724,7 +857,28 @@ namespace ExcelDiffMerge
             _diff = null;               // 이전 비교 결과 무효화
             _pendingLeft.Clear();
             _pendingRight.Clear();
+            _undo.Clear();
             ShowPreview();
+            UpdateOnboardingVisibility();
+            // 항목1: 두 파일이 모두 로드된 순간 자동 비교(버튼을 한 번 더 누를 필요 없음).
+            //  - 좌→우 순서 열기, 개별 드래그앤드롭, 한쪽 파일만 교체 등 모든 단일 로드 경로가 여기로 온다.
+            //  - 저장 후 재로드/재비교는 OnLoaded 경로(LoadAndCompare)라 여기로 오지 않아 이중 비교가 없다.
+            MaybeAutoCompareBothLoaded();
+        }
+
+        /// <summary>좌·우 워크북이 모두 로드되어 있으면 자동으로 비교를 실행한다.</summary>
+        private void MaybeAutoCompareBothLoaded()
+        {
+            if (_busy || _autoComparing) return;
+            if (_leftWb == null || _rightWb == null) return;
+            if (IsCsvSession()) return;   // CSV 폴더는 명시적 흐름 유지
+            _autoComparing = true;
+            try
+            {
+                Logger.Info("두 파일 로드 완료 → 자동 비교");
+                RunDiff();
+            }
+            finally { _autoComparing = false; }
         }
 
         /// <summary>로드된 워크북(들)을 색상 없이 원본 그대로 좌/우 그리드에 표시.</summary>
@@ -835,6 +989,7 @@ namespace ExcelDiffMerge
             Logger.Info("비교 시작 (" + (useCsv ? "CSV" : "Excel COM") + ")  좌=" + _leftPath + "  우=" + _rightPath);
             _pendingLeft.Clear();
             _pendingRight.Clear();
+            _undo.Clear();
             _progress.Visible = true;
             _lblSummary.Text = "로드 중…";
             SetBusy(true);
@@ -924,6 +1079,7 @@ namespace ExcelDiffMerge
             _isPreview = false;
             _pendingLeft.Clear();
             _pendingRight.Clear();
+            _undo.Clear();   // 재비교 시 언두 스택 초기화
             // 파일별(한쪽만) 저장 직후 재비교라면, 저장하지 않은 방향의 대기를 복원.
             if (_pendingRestoreLeft != null)
             {
@@ -950,6 +1106,7 @@ namespace ExcelDiffMerge
             _lblSummary.Text = _diff.Summary() + "  [" + AlignNameFor(effMode) + "]";
             Logger.Info("비교 결과: " + _diff.Summary() + " [" + AlignNameFor(effMode) + "]");
             UpdateButtonStates();
+            UpdateOnboardingVisibility();
         }
 
         private string AlignNameFor(AlignMode mode)
@@ -1428,6 +1585,7 @@ namespace ExcelDiffMerge
             else if (e.KeyCode == Keys.F5) { StartCompareExcel(); e.Handled = true; }
             else if (e.Control && e.Shift && e.KeyCode == Keys.O) { OpenFile(false); e.Handled = true; e.SuppressKeyPress = true; }
             else if (e.Control && e.KeyCode == Keys.S) { SaveMerges(); e.Handled = true; }
+            else if (e.Control && e.KeyCode == Keys.Z) { UndoLastMerge(); e.Handled = true; e.SuppressKeyPress = true; }
             else if (e.Control && e.KeyCode == Keys.O) { OpenFile(true); e.Handled = true; }
             else if (e.Control && e.KeyCode == Keys.F) { FocusChangeSearch(); e.Handled = true; e.SuppressKeyPress = true; }
             else if (e.Alt && e.KeyCode == Keys.Right) { MergeSelected(true); e.Handled = true; e.SuppressKeyPress = true; }
@@ -1587,7 +1745,16 @@ namespace ExcelDiffMerge
             if (selGrid.SelectedCells.Count == 0 && selGrid.CurrentCell != null)
                 selGrid.CurrentCell.Selected = true;
 
-            int applied = 0, skipped = 0;
+            MergeFromGrid(selGrid, leftToRight);
+        }
+
+        /// <summary>지정 그리드의 선택 셀들을 소스로, leftToRight 방향으로 병합 대기 등록(언두 1단위).</summary>
+        private void MergeFromGrid(DataGridView selGrid, bool leftToRight)
+        {
+            if (_curSheet == null || selGrid == null) return;
+
+            int skipped = 0;
+            List<object[]> writes = new List<object[]>();   // {destIsLeft, key, value}
             foreach (DataGridViewCell cell in selGrid.SelectedCells)
             {
                 if (cell.RowIndex < 0 || cell.RowIndex >= _rowMap.Length) continue;
@@ -1605,10 +1772,10 @@ namespace ExcelDiffMerge
                 }
                 object srcVal = EffectiveValue(leftToRight, dr, absCol);
                 string key = CellKey(_curSheet.Name, dstRow, absCol);
-                if (leftToRight) _pendingRight[key] = srcVal;
-                else _pendingLeft[key] = srcVal;
-                applied++;
+                // 목적지 pending: 좌→우면 우(pendingRight, isLeft=false).
+                writes.Add(new object[] { !leftToRight, key, srcVal });
             }
+            int applied = ApplyPending(writes, leftToRight ? "좌→우 병합" : "우→좌 병합");
             _gridLeft.Invalidate();
             _gridRight.Invalidate();
             string extra = skipped > 0 ? string.Format("  (행추가/삭제 {0}건은 미지원)", skipped) : "";
@@ -1616,6 +1783,91 @@ namespace ExcelDiffMerge
                 _pendingLeft.Count, _pendingRight.Count, applied, leftToRight ? "좌→우" : "우→좌", extra);
             Logger.Info(string.Format("병합 대기 등록 {0} (적용 {1}, 미지원 {2}) 시트={3}",
                 leftToRight ? "좌→우" : "우→좌", applied, skipped, _curSheet != null ? _curSheet.Name : "?"));
+            UpdateButtonStates();
+        }
+
+        /// <summary>
+        /// writes({destIsLeft, key, value}) 를 해당 pending 에 적용하고, 되돌리기(언두) 1단위로 스택에 기록.
+        /// 이전 값(있었는지/무엇이었는지)을 함께 저장해 Ctrl+Z 로 정확히 복원할 수 있게 한다.
+        /// </summary>
+        private int ApplyPending(List<object[]> writes, string label)
+        {
+            if (writes == null || writes.Count == 0) return 0;
+            UndoEntry ue = new UndoEntry();
+            ue.Label = label;
+            foreach (object[] w in writes)
+            {
+                bool isLeft = (bool)w[0];
+                string key = (string)w[1];
+                object val = w[2];
+                Dictionary<string, object> pend = isLeft ? _pendingLeft : _pendingRight;
+                UndoCell uc = new UndoCell();
+                uc.IsLeft = isLeft;
+                uc.Key = key;
+                object prev;
+                uc.Existed = pend.TryGetValue(key, out prev);
+                uc.PrevValue = uc.Existed ? prev : null;
+                ue.Cells.Add(uc);
+                pend[key] = val;
+            }
+            _undo.Push(ue);
+            return writes.Count;
+        }
+
+        /// <summary>Ctrl+Z — 마지막 병합 대기 등록(또는 셀 취소)을 되돌린다.</summary>
+        private void UndoLastMerge()
+        {
+            if (_undo.Count == 0)
+            {
+                _lblSummary.Text = "되돌릴 병합 동작이 없습니다.";
+                return;
+            }
+            UndoEntry ue = _undo.Pop();
+            for (int i = ue.Cells.Count - 1; i >= 0; i--)
+            {
+                UndoCell uc = ue.Cells[i];
+                Dictionary<string, object> pend = uc.IsLeft ? _pendingLeft : _pendingRight;
+                if (uc.Existed) pend[uc.Key] = uc.PrevValue;
+                else pend.Remove(uc.Key);
+            }
+            _gridLeft.Invalidate();
+            _gridRight.Invalidate();
+            _lblSummary.Text = string.Format("병합 {0}건 취소(되돌리기: {1}) — 대기 좌:{2} 우:{3}",
+                ue.Cells.Count, ue.Label, _pendingLeft.Count, _pendingRight.Count);
+            Logger.Info("되돌리기: " + ue.Label + " (" + ue.Cells.Count + "건)");
+            UpdateButtonStates();
+        }
+
+        /// <summary>차이 셀 더블클릭 = 그 값을 반대쪽에 병합 대기 등록(그 방향 화살표 1클릭과 동일).</summary>
+        private void Grid_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            if (_curSheet == null || _isPreview || _diff == null || IsReadOnlySession()) return;
+            if (e.RowIndex >= _rowMap.Length) return;
+            DataGridView g = (DataGridView)sender;
+            bool leftToRight = (g == _gridLeft);   // 왼쪽 셀 더블클릭 = 왼쪽값을 오른쪽에
+
+            DiffRow dr = _curSheet.Rows[_rowMap[e.RowIndex]];
+            int absCol = _colStart + e.ColumnIndex;
+            if (dr.StatusAt(absCol) == CellStatus.Same) return;   // 동일 셀은 무시
+
+            int srcRow = leftToRight ? dr.LeftRow : dr.RightRow;
+            int dstRow = leftToRight ? dr.RightRow : dr.LeftRow;
+            if (srcRow < 0 || dstRow < 0)
+            {
+                _lblSummary.Text = "이 셀은 행 추가/삭제라 반대쪽 반영을 지원하지 않습니다.";
+                return;
+            }
+            object srcVal = EffectiveValue(leftToRight, dr, absCol);
+            string key = CellKey(_curSheet.Name, dstRow, absCol);
+            List<object[]> writes = new List<object[]>();
+            writes.Add(new object[] { !leftToRight, key, srcVal });
+            ApplyPending(writes, "더블클릭 병합");
+            _gridLeft.Invalidate();
+            _gridRight.Invalidate();
+            _lblSummary.Text = string.Format("더블클릭 병합 {0} — {1}{2} (대기 좌:{3} 우:{4})",
+                leftToRight ? "좌→우" : "우→좌", ColLetter(absCol), dstRow, _pendingLeft.Count, _pendingRight.Count);
+            Logger.Info("더블클릭 병합 " + (leftToRight ? "좌→우" : "우→좌") + " " + key);
             UpdateButtonStates();
         }
 
@@ -1652,7 +1904,7 @@ namespace ExcelDiffMerge
                 "전체 병합", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (ans != DialogResult.Yes) return;
 
-            int applied = 0;
+            List<object[]> writes = new List<object[]>();   // {destIsLeft, key, value}
             foreach (SheetDiff sd in _diff.Sheets)
             {
                 foreach (DiffNav nv in sd.Nav)
@@ -1665,11 +1917,10 @@ namespace ExcelDiffMerge
                     SheetData srcSheet = leftToRight ? sd.Left : sd.Right;
                     object srcVal = srcSheet != null ? srcSheet.GetValueAbs(srcRow, nv.Col) : null;
                     string key = CellKey(sd.Name, dstRow, nv.Col);
-                    if (leftToRight) _pendingRight[key] = srcVal;
-                    else _pendingLeft[key] = srcVal;
-                    applied++;
+                    writes.Add(new object[] { !leftToRight, key, srcVal });
                 }
             }
+            int applied = ApplyPending(writes, leftToRight ? "전체 병합(좌→우)" : "전체 병합(우→좌)");
             _gridLeft.Invalidate();
             _gridRight.Invalidate();
             _lblSummary.Text = string.Format("전체 병합 대기 등록 완료 ({0}개 {1}). [저장]으로 반영하세요. 대기 좌:{2} 우:{3}",
@@ -1947,6 +2198,7 @@ namespace ExcelDiffMerge
             if (ans != DialogResult.Yes) return;
             _pendingLeft.Clear();
             _pendingRight.Clear();
+            _undo.Clear();
             _gridLeft.Invalidate();
             _gridRight.Invalidate();
             _lblSummary.Text = "병합 대기를 모두 취소했습니다.";
@@ -1990,8 +2242,17 @@ namespace ExcelDiffMerge
             int absCol = _colStart + _ctxCol;
             string key = CellKey(_curSheet.Name, absRow, absCol);
             Dictionary<string, object> pend = isLeft ? _pendingLeft : _pendingRight;
-            if (pend.Remove(key))
+            object prevVal;
+            bool had = pend.TryGetValue(key, out prevVal);
+            if (had && pend.Remove(key))
             {
+                // 개별 취소도 언두 1단위로 기록(Ctrl+Z 로 되살림).
+                UndoEntry ue = new UndoEntry();
+                ue.Label = "셀 병합 취소";
+                UndoCell uc = new UndoCell();
+                uc.IsLeft = isLeft; uc.Key = key; uc.Existed = true; uc.PrevValue = prevVal;
+                ue.Cells.Add(uc);
+                _undo.Push(ue);
                 _gridLeft.Invalidate();
                 _gridRight.Invalidate();
                 _lblSummary.Text = "셀 병합 취소: " + ColLetter(absCol) + absRow
@@ -2014,23 +2275,98 @@ namespace ExcelDiffMerge
 
         private void OnDragDrop(object sender, DragEventArgs e)
         {
+            HandleFileDrop(e);
+        }
+
+        /// <summary>
+        /// 파일 드롭 처리(폼/그리드 공용). 항목1 자동 비교의 세 드롭 경로:
+        ///  (a) 2개 동시 드롭 → 좌/우 배정 후 즉시 자동 비교(LoadAndCompare).
+        ///  (b) 1개 드롭으로 비어 있던 반대쪽이 채워짐 → OnOneLoaded 에서 두 파일 로드 완료 시 자동 비교.
+        ///  (c) 이미 비교된 상태에서 1개 드롭 → 한쪽 교체 후 OnOneLoaded 에서 자동 재비교.
+        /// </summary>
+        private void HandleFileDrop(DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
             string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
             if (files == null || files.Length == 0) return;
             if (files.Length >= 2)
             {
+                // (a) 두 파일을 좌/우로 배정하고 곧바로 비교.
                 _leftPath = files[0]; _lblLeftPath.Text = files[0];
                 _rightPath = files[1]; _lblRightPath.Text = files[1];
-                Logger.Info("드래그앤드롭 2파일 → 로드/비교");
+                _leftWb = null; _rightWb = null;   // 새 쌍 → 캐시 무효화
+                Logger.Info("드래그앤드롭 2파일 → 로드/자동 비교");
                 LoadAndCompare(false);
             }
             else
             {
+                // (b)/(c) 비어 있으면 그쪽, 둘 다 있으면 우측을 교체 → 로드 완료 시 자동 (재)비교.
                 bool left = string.IsNullOrEmpty(_leftPath);
                 if (left) { _leftPath = files[0]; _lblLeftPath.Text = files[0]; }
                 else { _rightPath = files[0]; _lblRightPath.Text = files[0]; }
-                Logger.Info("드래그앤드롭 1파일(" + (left ? "좌" : "우") + ") → 미리보기");
+                Logger.Info("드래그앤드롭 1파일(" + (left ? "좌" : "우") + ") → 로드 후 두 파일이면 자동 비교");
                 LoadOneAsync(files[0], left);
             }
+        }
+
+        // ---- 셀 드래그 → 반대쪽 병합 등록(U-드래그) ----
+        private void Grid_DragMouseDown(object sender, MouseEventArgs e)
+        {
+            _dragArmed = false;
+            if (e.Button != MouseButtons.Left) return;
+            if (_curSheet == null || _isPreview || _diff == null || IsReadOnlySession()) return;
+            DataGridView g = (DataGridView)sender;
+            DataGridView.HitTestInfo hit = g.HitTest(e.X, e.Y);
+            if (hit.RowIndex < 0 || hit.ColumnIndex < 0) return;
+            // 이미 선택된 셀에서 시작한 드래그만 '병합 드래그'로(빈 영역 드래그=범위선택 유지).
+            bool onSel = false;
+            try { onSel = g.Rows[hit.RowIndex].Cells[hit.ColumnIndex].Selected; }
+            catch { }
+            if (!onSel) return;
+            _dragArmed = true; _dragGrid = g; _dragStart = new Point(e.X, e.Y);
+        }
+
+        private void Grid_DragMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_dragArmed) return;
+            if ((e.Button & MouseButtons.Left) != MouseButtons.Left) { _dragArmed = false; return; }
+            if (sender != _dragGrid) return;
+            Size ds = SystemInformation.DragSize;
+            if (Math.Abs(e.X - _dragStart.X) < ds.Width && Math.Abs(e.Y - _dragStart.Y) < ds.Height) return;
+            _dragArmed = false;
+            bool isLeft = (_dragGrid == _gridLeft);
+            try { _dragGrid.DoDragDrop(new CellDragToken(isLeft), DragDropEffects.Copy); }
+            catch { }
+        }
+
+        private void Grid_DragMouseUp(object sender, MouseEventArgs e)
+        {
+            _dragArmed = false;
+        }
+
+        private void Grid_DragOver(object sender, DragEventArgs e)
+        {
+            // 셀 병합 드래그(내부 토큰)와 파일 드롭(외부)을 데이터 타입으로 구분.
+            if (e.Data.GetDataPresent(typeof(CellDragToken))) { e.Effect = DragDropEffects.Copy; return; }
+            if (e.Data.GetDataPresent(DataFormats.FileDrop)) { e.Effect = DragDropEffects.Copy; return; }
+            e.Effect = DragDropEffects.None;
+        }
+
+        private void Grid_DragDrop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(typeof(CellDragToken)))
+            {
+                CellDragToken tok = (CellDragToken)e.Data.GetData(typeof(CellDragToken));
+                DataGridView target = (DataGridView)sender;
+                bool targetIsLeft = (target == _gridLeft);
+                if (tok.SourceIsLeft == targetIsLeft) return;   // 같은 쪽에 드롭 → 무시
+                // 방향은 드래그 방향과 동일(소스 그리드 값 → 타깃 파일). 좌표는 소스의 선택 셀을 그대로 사용.
+                DataGridView srcGrid = tok.SourceIsLeft ? _gridLeft : _gridRight;
+                MergeFromGrid(srcGrid, tok.SourceIsLeft);
+                return;
+            }
+            // 파일을 그리드 위에 떨어뜨린 경우도 폼과 동일하게 처리(자동 비교 경로 유지).
+            HandleFileDrop(e);
         }
 
         private void ShowOnboardingIfNeeded()
@@ -2050,12 +2386,13 @@ namespace ExcelDiffMerge
                     lbl.Text =
                         "사용법\r\n\r\n"
                       + "1) [좌측 열기]/[우측 열기] 로 파일 2개 선택 (또는 드래그앤드롭)\r\n"
-                      + "2) [비교] → 좌우 병렬로 차이 표시\r\n"
+                      + "2) 두 파일이 모두 열리면 자동으로 비교됩니다 (다시 하려면 [다시 비교])\r\n"
                       + "     노랑=변경 초록=추가 빨강=삭제 파랑=병합됨 회색=정렬빈칸\r\n"
                       + "3) 정렬 방식 선택: 자동정렬(행 삽입/삭제 인지) / 키 컬럼 / 좌표\r\n"
                       + "4) F7/F8 로 다음/이전 차이. 우측 마커바 클릭으로 점프\r\n"
                       + "5) 셀 선택 → 하단에 좌/우 값·수식 표시\r\n"
-                      + "6) [좌→우]/[우→좌] 병합 후 [저장](Ctrl+S)\r\n\r\n"
+                      + "6) 가운데 [→]/[←] 화살표(또는 셀 더블클릭·드래그)로 병합,\r\n"
+                      + "     각 화면 하단 [이 파일에 저장] 으로 저장. 실수는 Ctrl+Z 로 되돌리기\r\n\r\n"
                       + "* Excel 없이 테스트: [CSV폴더비교] 로 CSV 폴더 2개 비교\r\n"
                       + "* DRM 파일은 Excel 이 복호화하여 읽습니다(우회 없음).";
                     f.Controls.Add(lbl);

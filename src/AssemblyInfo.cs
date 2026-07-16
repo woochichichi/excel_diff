@@ -5,6 +5,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyTitle("ExcelDiffMerge")]
 [assembly: AssemblyDescription("WinMerge 식 Excel Diff/Merge (폐쇄망/DRM, Excel COM late binding)")]
 [assembly: AssemblyProduct("ExcelDiffMerge")]
-[assembly: AssemblyVersion("1.8.0.0")]
-[assembly: AssemblyFileVersion("1.8.0.0")]
+[assembly: AssemblyVersion("1.9.0.0")]
+[assembly: AssemblyFileVersion("1.9.0.0")]
 [assembly: ComVisible(false)]
