@@ -121,9 +121,9 @@ namespace ExcelDiffMerge
             primary.Items.Add(_btnPrev);
             primary.Items.Add(_btnNext);
             primary.Items.Add(new ToolStripSeparator());
-            // 병합은 화살표 대신 '말'로(차이 이동 화살표와 헷갈리지 않게).
-            _btnMergeLR = BigBtn("왼쪽값을 오른쪽에", "선택한 셀을 왼쪽(좌) 값으로 오른쪽(우)에 덮어쓰기(병합 대기)", delegate { MergeSelected(true); }, false);
-            _btnMergeRL = BigBtn("오른쪽값을 왼쪽에", "선택한 셀을 오른쪽(우) 값으로 왼쪽(좌)에 덮어쓰기(병합 대기)", delegate { MergeSelected(false); }, false);
+            // 병합: 값이 흐르는 방향으로 화살표(→ 는 목적지 방향). 차이이동(◀▶ 삼각형)과 글리프가 달라 구분됨.
+            _btnMergeLR = BigBtn("왼쪽값 → 오른쪽", "선택한 셀을 왼쪽(좌) 값으로 오른쪽(우)에 덮어쓰기(병합 대기)", delegate { MergeSelected(true); }, false);
+            _btnMergeRL = BigBtn("왼쪽 ← 오른쪽값", "선택한 셀을 오른쪽(우) 값으로 왼쪽(좌)에 덮어쓰기(병합 대기)", delegate { MergeSelected(false); }, false);
             _btnSave = BigBtn("저장", "병합 결과를 원본 파일에 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
             primary.Items.Add(_btnMergeLR);
             primary.Items.Add(_btnMergeRL);
@@ -380,13 +380,19 @@ namespace ExcelDiffMerge
         {
             // 미리보기 상태에서는 네비/병합/변경만 비활성(진짜 비교 후에만 의미 있음).
             bool realDiff = _diff != null && _curSheet != null && !_isPreview;
+            bool canMerge = realDiff && !IsReadOnlySession();   // CSV/Word 는 저장 불가 → 병합도 비활성
             bool hasPending = (_pendingLeft.Count + _pendingRight.Count) > 0;
             if (_btnPrev != null) _btnPrev.Enabled = realDiff;
             if (_btnNext != null) _btnNext.Enabled = realDiff;
-            if (_btnMergeLR != null) _btnMergeLR.Enabled = realDiff;
-            if (_btnMergeRL != null) _btnMergeRL.Enabled = realDiff;
+            if (_btnMergeLR != null) _btnMergeLR.Enabled = canMerge;
+            if (_btnMergeRL != null) _btnMergeRL.Enabled = canMerge;
             if (_btnChangesOnly != null) _btnChangesOnly.Enabled = realDiff;
             if (_btnSave != null) _btnSave.Enabled = hasPending;
+        }
+
+        private bool IsReadOnlySession()
+        {
+            return IsCsvSession() || IsWordPath(_leftPath) || IsWordPath(_rightPath);
         }
 
         private void ShowLogPath()
@@ -481,7 +487,10 @@ namespace ExcelDiffMerge
         {
             using (OpenFileDialog dlg = new OpenFileDialog())
             {
-                dlg.Filter = "Excel 파일 (*.xlsx;*.xlsm;*.xls)|*.xlsx;*.xlsm;*.xls|모든 파일 (*.*)|*.*";
+                dlg.Filter = "Excel/Word (*.xlsx;*.xlsm;*.xls;*.docx;*.doc;*.docm)|*.xlsx;*.xlsm;*.xls;*.docx;*.doc;*.docm"
+                           + "|Excel (*.xlsx;*.xlsm;*.xls)|*.xlsx;*.xlsm;*.xls"
+                           + "|Word (*.docx;*.doc;*.docm)|*.docx;*.doc;*.docm"
+                           + "|모든 파일 (*.*)|*.*";
                 string last = _settings.LastFolder;
                 if (!string.IsNullOrEmpty(last) && Directory.Exists(last)) dlg.InitialDirectory = last;
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
@@ -656,14 +665,27 @@ namespace ExcelDiffMerge
                 });
         }
 
-        /// <summary>경로 1개를 알맞은 리더(CSV 폴더 or Excel COM)로 로드. 리더는 매번 새로 생성/해제.</summary>
+        /// <summary>경로 1개를 확장자에 맞는 리더로 로드. 리더는 매번 새로 생성/해제.</summary>
         private static WorkbookData LoadWorkbookSafe(string path)
         {
-            using (IWorkbookReader reader = Directory.Exists(path)
-                ? (IWorkbookReader)new CsvWorkbookReader() : new ExcelComReader())
+            using (IWorkbookReader reader = MakeReader(path))
             {
                 return reader.LoadWorkbook(path);
             }
+        }
+
+        private static IWorkbookReader MakeReader(string path)
+        {
+            if (Directory.Exists(path)) return new CsvWorkbookReader();   // CSV 폴더(테스트)
+            if (IsWordPath(path)) return new WordComReader();             // Word 문서
+            return new ExcelComReader();                                  // Excel(기본)
+        }
+
+        private static bool IsWordPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext == ".doc" || ext == ".docx" || ext == ".docm";
         }
 
         private void OnLoaded(WorkbookData[] res, Exception err)
@@ -798,11 +820,13 @@ namespace ExcelDiffMerge
             g.Columns.Clear();
             if (_colCount <= 0) return;
             DataGridViewColumn[] cols = new DataGridViewColumn[_colCount];
+            // 단일 열(예: Word 문단 뷰)은 넓게 → 텍스트가 잘 보이게.
+            int width = _colCount == 1 ? 640 : 110;
             for (int i = 0; i < _colCount; i++)
             {
                 DataGridViewTextBoxColumn col = new DataGridViewTextBoxColumn();
-                col.HeaderText = ColLetter(_colStart + i);
-                col.Width = 110;
+                col.HeaderText = _colCount == 1 ? "본문" : ColLetter(_colStart + i);
+                col.Width = width;
                 col.SortMode = DataGridViewColumnSortMode.NotSortable;
                 cols[i] = col;
             }
@@ -1137,6 +1161,12 @@ namespace ExcelDiffMerge
             if (IsCsvSession())
             {
                 Info("CSV 테스트 세션은 저장을 지원하지 않습니다(실제 Excel 파일에서만 병합 저장).");
+                return;
+            }
+            if (IsWordPath(_leftPath) || IsWordPath(_rightPath))
+            {
+                Info("Word(.docx) 문서는 현재 비교/보기 전용입니다(병합 저장 미지원).\r\n"
+                   + "Word 병합이 필요하면 알려주세요 — 다음 버전에서 지원하겠습니다.");
                 return;
             }
 

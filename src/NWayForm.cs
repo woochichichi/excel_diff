@@ -52,16 +52,21 @@ namespace ExcelDiffMerge
 
             ToolStrip tool = new ToolStrip();
             tool.GripStyle = ToolStripGripStyle.Hidden;
-            AddBtn(tool, "base 선택", delegate { PickBase(); });
-            AddBtn(tool, "버전 추가", delegate { AddVersion(); });
+            tool.Dock = DockStyle.Top;
+            // 버튼처럼 확실히 보이도록 크게 + 스타일 렌더러.
+            tool.Font = new Font("Segoe UI", 11F, FontStyle.Regular);
+            tool.ImageScalingSize = new Size(1, 1);
+            tool.Renderer = new ToolStripProfessionalRenderer();
+            tool.Padding = new Padding(3, 3, 3, 3);
+            AddBtn(tool, "① base 선택", delegate { PickBase(); });
+            AddBtn(tool, "② 버전 추가", delegate { AddVersion(); });
             AddBtn(tool, "버전 제거", delegate { RemoveVersion(); });
             tool.Items.Add(new ToolStripSeparator());
-            AddBtn(tool, "비교", delegate { StartCompare(); });
+            AddBtn(tool, "③ 비교", delegate { StartCompare(); });
             tool.Items.Add(new ToolStripSeparator());
-            AddBtn(tool, "선택 셀 값 채택…", delegate { AdoptSelected(); });
-            AddBtn(tool, "base 에 저장", delegate { SaveAdopted(); });
+            AddBtn(tool, "④ 선택 셀 값 채택…", delegate { AdoptSelected(); });
+            AddBtn(tool, "⑤ base 에 저장", delegate { SaveAdopted(); });
             Controls.Add(tool);
-            tool.Dock = DockStyle.Top;
 
             // 상단: base + 버전 목록
             Panel top = new Panel();
@@ -151,6 +156,9 @@ namespace ExcelDiffMerge
         {
             ToolStripButton b = new ToolStripButton(text);
             b.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            b.Padding = new Padding(10, 7, 10, 7);   // 버튼처럼 크게
+            b.Margin = new Padding(3, 2, 3, 2);
+            b.BackColor = System.Drawing.Color.FromArgb(235, 240, 250);
             b.Click += h;
             t.Items.Add(b);
         }
