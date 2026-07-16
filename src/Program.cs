@@ -27,6 +27,7 @@ namespace ExcelDiffMerge
         [STAThread]
         private static int Main(string[] args)
         {
+            Logger.Init();
             if (args.Length >= 1 && args[0] == "--poc")
             {
                 EnsureConsole();
@@ -48,6 +49,19 @@ namespace ExcelDiffMerge
                 return SelfTest.Run();
             }
 
+            // 전역 예외를 로그로 남긴다(폐쇄망 진단).
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object s, System.Threading.ThreadExceptionEventArgs e)
+            {
+                Logger.Error("UI 스레드 미처리 예외", e.Exception);
+                MessageBox.Show("오류: " + e.Exception.Message + "\r\n\r\n로그: " + Logger.LogPath,
+                    "ExcelDiffMerge", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+            {
+                Logger.Error("치명적 미처리 예외", e.ExceptionObject as Exception);
+            };
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             try
@@ -56,10 +70,12 @@ namespace ExcelDiffMerge
             }
             catch (Exception ex)
             {
-                MessageBox.Show("치명적 오류: " + ex.Message, "ExcelDiffMerge",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Error("Application.Run 실패", ex);
+                MessageBox.Show("치명적 오류: " + ex.Message + "\r\n\r\n로그: " + Logger.LogPath,
+                    "ExcelDiffMerge", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
+            Logger.Info("정상 종료");
             return 0;
         }
 

@@ -58,8 +58,13 @@ namespace ExcelDiffMerge
         public void ApplyAndSave(string targetPath, List<MergeItem> items, bool createBackup, out string backupPath)
         {
             backupPath = null;
+            Logger.Info("병합 저장 시작: " + targetPath + " (셀 " + (items != null ? items.Count : 0)
+                        + "개, 백업=" + createBackup + ")");
             if (createBackup)
+            {
                 backupPath = MakeBackup(targetPath);
+                Logger.Info("백업 생성: " + backupPath);
+            }
 
             dynamic workbooks = null;
             dynamic wb = null;
@@ -91,6 +96,12 @@ namespace ExcelDiffMerge
                 Release(ref sheets);
 
                 wb.Save(); // 같은 경로/형식 저장 → Excel 세션이므로 DRM 재적용 유지
+                Logger.Info("병합 저장 완료: " + targetPath);
+            }
+            catch (Exception exSave)
+            {
+                Logger.Error("병합 저장 실패: " + targetPath, exSave);
+                throw;
             }
             finally
             {

@@ -43,6 +43,8 @@ namespace ExcelDiffMerge
             // 매크로 자동실행 차단 (spec §7). AutomationSecurity 는 프로세스 전역이라 원복 대비 저장.
             try { _savedAutomationSecurity = (int)_xl.AutomationSecurity; } catch { }
             try { _xl.AutomationSecurity = msoAutomationSecurityForceDisable; } catch { }
+            try { Logger.Info("Excel COM 인스턴스 생성. Version=" + (string)_xl.Version); }
+            catch { Logger.Info("Excel COM 인스턴스 생성(버전 조회 실패)"); }
         }
 
         /// <summary>열기 직후 성능 최적화 옵션 적용 (spec §4-3). 작업 끝나면 RestoreExcelOptions 로 원복.</summary>
@@ -76,15 +78,25 @@ namespace ExcelDiffMerge
             WorkbookData wbData = new WorkbookData(path);
             dynamic workbooks = null;
             dynamic wb = null;
+            Logger.Info("COM Open(ReadOnly) 시도: " + path);
             try
             {
                 workbooks = _xl.Workbooks;
                 // Open positional (named arg 미지원 csc 대비):
                 //  1 Filename, 2 UpdateLinks=0, 3 ReadOnly=true, 7 IgnoreReadOnlyRecommended=true, 11 Notify=false
                 // → 이미 열린 파일/읽기전용 권장 프롬프트를 선제 차단(조사 반영).
-                wb = workbooks.Open(path, 0, true,
-                    Type.Missing, Type.Missing, Type.Missing, true,
-                    Type.Missing, Type.Missing, Type.Missing, false);
+                try
+                {
+                    wb = workbooks.Open(path, 0, true,
+                        Type.Missing, Type.Missing, Type.Missing, true,
+                        Type.Missing, Type.Missing, Type.Missing, false);
+                }
+                catch (Exception exOpen)
+                {
+                    // DRM 권한없음/잠김 등 → HRESULT 포함 로깅 후 상위로(§7, §11).
+                    Logger.Error("COM Open 실패: " + path, exOpen);
+                    throw;
+                }
 
                 dynamic sheets = wb.Worksheets;
                 int sheetCount = (int)sheets.Count;
@@ -102,6 +114,7 @@ namespace ExcelDiffMerge
                     }
                 }
                 Release(ref sheets);
+                Logger.Info("로드 완료: " + path + " (시트 " + wbData.Sheets.Count + "개)");
             }
             finally
             {
@@ -272,6 +285,7 @@ namespace ExcelDiffMerge
             GC.WaitForPendingFinalizers();
             GC.Collect();
             GC.WaitForPendingFinalizers();
+            Logger.Info("Excel COM 인스턴스 정리 완료(Quit+Release+GC)");
         }
     }
 }

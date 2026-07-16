@@ -27,6 +27,12 @@ namespace ExcelDiffMerge
         private readonly Settings _settings;
 
         private ToolStrip _tool;
+        private ToolStrip _tool2;
+        private ToolStripButton _btnPrev;
+        private ToolStripButton _btnNext;
+        private ToolStripButton _btnMergeLR;
+        private ToolStripButton _btnMergeRL;
+        private ToolStripButton _btnSave;
         private ToolStripComboBox _cboAlign;
         private ToolStripTextBox _txtKeyCol;
         private DataGridView _gridLeft;
@@ -90,42 +96,63 @@ namespace ExcelDiffMerge
             KeyPreview = true;
             KeyDown += OnKeyDown;
 
-            // ----- 툴바
-            ToolStrip tool = new ToolStrip();
-            _tool = tool;
-            tool.GripStyle = ToolStripGripStyle.Hidden;
-            AddButton(tool, "좌측 열기", delegate { OpenFile(true); });
-            AddButton(tool, "우측 열기", delegate { OpenFile(false); });
-            AddButton(tool, "비교", delegate { StartCompareExcel(); });
-            tool.Items.Add(new ToolStripSeparator());
-            tool.Items.Add(new ToolStripLabel("정렬:"));
+            // ===== 주 툴바(자주 쓰는 동작 — 크게) =====
+            ToolStrip primary = new ToolStrip();
+            _tool = primary;
+            primary.GripStyle = ToolStripGripStyle.Hidden;
+            primary.Dock = DockStyle.Top;
+            primary.Font = new Font("Segoe UI", 12F, FontStyle.Regular);
+            primary.ImageScalingSize = new Size(1, 1);
+            primary.Padding = new Padding(3, 2, 3, 2);
+            primary.Renderer = new ToolStripProfessionalRenderer();
+
+            primary.Items.Add(BigBtn("좌측 열기", "비교 기준(왼쪽) 파일 열기 — Ctrl+O", delegate { OpenFile(true); }, false));
+            primary.Items.Add(BigBtn("우측 열기", "비교 대상(오른쪽) 파일 열기", delegate { OpenFile(false); }, false));
+            primary.Items.Add(BigBtn("비교", "두 파일을 비교 (가장 중요)", delegate { StartCompareExcel(); }, true));
+            primary.Items.Add(new ToolStripSeparator());
+            _btnPrev = BigBtn("◀ 이전", "이전 차이로 이동 (F8)", delegate { NavigateDiff(-1); }, false);
+            _btnNext = BigBtn("다음 ▶", "다음 차이로 이동 (F7)", delegate { NavigateDiff(1); }, false);
+            primary.Items.Add(_btnPrev);
+            primary.Items.Add(_btnNext);
+            primary.Items.Add(new ToolStripSeparator());
+            _btnMergeLR = BigBtn("좌→우", "선택 셀을 왼쪽 값으로 오른쪽에 반영(병합)", delegate { MergeSelected(true); }, false);
+            _btnMergeRL = BigBtn("우→좌", "선택 셀을 오른쪽 값으로 왼쪽에 반영(병합)", delegate { MergeSelected(false); }, false);
+            _btnSave = BigBtn("저장", "병합 결과 저장 (Ctrl+S)", delegate { SaveMerges(); }, true);
+            primary.Items.Add(_btnMergeLR);
+            primary.Items.Add(_btnMergeRL);
+            primary.Items.Add(_btnSave);
+
+            // ===== 보조 툴바(옵션 — 작게) =====
+            ToolStrip secondary = new ToolStrip();
+            _tool2 = secondary;
+            secondary.GripStyle = ToolStripGripStyle.Hidden;
+            secondary.Dock = DockStyle.Top;
+            secondary.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular);
+
+            secondary.Items.Add(new ToolStripLabel("정렬:"));
             _cboAlign = new ToolStripComboBox();
             _cboAlign.DropDownStyle = ComboBoxStyle.DropDownList;
             _cboAlign.Items.AddRange(new object[] { "좌표(빠름)", "자동정렬(LCS)", "키 컬럼" });
             _cboAlign.SelectedIndex = (int)_alignMode;
+            _cboAlign.ToolTipText = "행 정렬 방식: 좌표/자동정렬(행 삽입·삭제 인지)/키 컬럼";
             _cboAlign.SelectedIndexChanged += delegate { OnAlignModeChanged(); };
-            tool.Items.Add(_cboAlign);
-            tool.Items.Add(new ToolStripLabel("키열:"));
+            secondary.Items.Add(_cboAlign);
+            secondary.Items.Add(new ToolStripLabel("키열:"));
             _txtKeyCol = new ToolStripTextBox();
             _txtKeyCol.Width = 40;
             _txtKeyCol.ToolTipText = "키 컬럼 문자(예: A). '키 컬럼' 정렬에서 사용.";
             _txtKeyCol.LostFocus += delegate { OnKeyColChanged(); };
-            tool.Items.Add(_txtKeyCol);
-            tool.Items.Add(new ToolStripSeparator());
-            AddButton(tool, "◀이전(F8)", delegate { NavigateDiff(-1); });
-            AddButton(tool, "다음(F7)▶", delegate { NavigateDiff(1); });
-            _btnChangesOnly = new ToolStripButton("변경만");
+            secondary.Items.Add(_txtKeyCol);
+            secondary.Items.Add(new ToolStripSeparator());
+            _btnChangesOnly = new ToolStripButton("변경만 보기");
             _btnChangesOnly.CheckOnClick = true;
+            _btnChangesOnly.ToolTipText = "변경/추가/삭제 행만 표시(동일 행 접기)";
             _btnChangesOnly.CheckedChanged += delegate { _changesOnly = _btnChangesOnly.Checked; RefreshGridRows(); };
-            tool.Items.Add(_btnChangesOnly);
-            tool.Items.Add(new ToolStripSeparator());
-            AddButton(tool, "좌→우", delegate { MergeSelected(true); });
-            AddButton(tool, "우→좌", delegate { MergeSelected(false); });
-            AddButton(tool, "저장", delegate { SaveMerges(); });
-            tool.Items.Add(new ToolStripSeparator());
-            AddButton(tool, "N-way…", delegate { OpenNWayDialog(); });
-            AddButton(tool, "CSV폴더비교", delegate { StartCompareCsv(); });
-            tool.Dock = DockStyle.Top;
+            secondary.Items.Add(_btnChangesOnly);
+            secondary.Items.Add(new ToolStripSeparator());
+            secondary.Items.Add(SmallBtn("N-way…", "여러 버전 취합 비교", delegate { OpenNWayDialog(); }));
+            secondary.Items.Add(SmallBtn("CSV폴더비교(테스트)", "Excel 없이 CSV 폴더 2개 비교", delegate { StartCompareCsv(); }));
+            secondary.Items.Add(SmallBtn("로그 열기", "로그 파일 위치 보기", delegate { ShowLogPath(); }));
 
             // ----- 범례
             Panel legend = BuildLegend();
@@ -192,11 +219,85 @@ namespace ExcelDiffMerge
             Controls.Add(pathPanel);    // Top
             Controls.Add(_tabs);        // Top
             Controls.Add(legend);       // Top
-            Controls.Add(tool);         // Top(최상단)
+            Controls.Add(secondary);    // Top (보조, 주툴바 아래)
+            Controls.Add(primary);      // Top (최상단, 주툴바)
             Controls.Add(detailPanel);  // Bottom
             Controls.Add(status);       // Bottom(최하단)
 
             UpdateKeyColEnabled();
+            UpdateButtonStates();
+            RestoreWindow();
+            FormClosing += delegate { SaveWindow(); };
+        }
+
+        private ToolStripButton BigBtn(string text, string tip, EventHandler h, bool emphasize)
+        {
+            ToolStripButton b = new ToolStripButton(text);
+            b.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            b.ToolTipText = tip;
+            b.Padding = new Padding(12, 8, 12, 8);
+            b.Margin = new Padding(2, 1, 2, 1);
+            if (emphasize) b.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
+            if (h != null) b.Click += h;
+            return b;
+        }
+
+        private ToolStripButton SmallBtn(string text, string tip, EventHandler h)
+        {
+            ToolStripButton b = new ToolStripButton(text);
+            b.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            b.ToolTipText = tip;
+            if (h != null) b.Click += h;
+            return b;
+        }
+
+        /// <summary>상태에 따라 버튼 활성/비활성 (편의성).</summary>
+        private void UpdateButtonStates()
+        {
+            bool hasDiff = _diff != null && _curSheet != null;
+            bool hasPending = (_pendingLeft.Count + _pendingRight.Count) > 0;
+            if (_btnPrev != null) _btnPrev.Enabled = hasDiff;
+            if (_btnNext != null) _btnNext.Enabled = hasDiff;
+            if (_btnMergeLR != null) _btnMergeLR.Enabled = hasDiff;
+            if (_btnMergeRL != null) _btnMergeRL.Enabled = hasDiff;
+            if (_btnChangesOnly != null) _btnChangesOnly.Enabled = hasDiff;
+            if (_btnSave != null) _btnSave.Enabled = hasPending;
+        }
+
+        private void ShowLogPath()
+        {
+            string p = Logger.LogPath ?? "(로그 파일 없음)";
+            Logger.Info("사용자: 로그 위치 확인");
+            MessageBox.Show(this, "로그 파일 위치:\r\n" + p +
+                "\r\n\r\n오류 발생 시 이 파일을 확인/전달하세요.",
+                "로그", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void RestoreWindow()
+        {
+            try
+            {
+                int w = IntSetting("WinW", 0), h = IntSetting("WinH", 0);
+                if (w > 300 && h > 200) { Width = w; Height = h; }
+                if (_settings.GetBool("WinMax", false)) WindowState = FormWindowState.Maximized;
+            }
+            catch { }
+        }
+
+        private void SaveWindow()
+        {
+            try
+            {
+                _settings.SetBool("WinMax", WindowState == FormWindowState.Maximized);
+                if (WindowState == FormWindowState.Normal)
+                {
+                    _settings.Set("WinW", Width.ToString());
+                    _settings.Set("WinH", Height.ToString());
+                }
+                _settings.Save();
+                Logger.Info("창 상태 저장, 앱 종료 진행");
+            }
+            catch { }
         }
 
         private Panel BuildLegend()
@@ -250,14 +351,6 @@ namespace ExcelDiffMerge
             return g;
         }
 
-        private static void AddButton(ToolStrip tool, string text, EventHandler onClick)
-        {
-            ToolStripButton b = new ToolStripButton(text);
-            b.DisplayStyle = ToolStripItemDisplayStyle.Text;
-            b.Click += onClick;
-            tool.Items.Add(b);
-        }
-
         // ================================================================ 파일 열기/비교
         private void OpenFile(bool left)
         {
@@ -269,6 +362,7 @@ namespace ExcelDiffMerge
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 if (left) { _leftPath = dlg.FileName; _lblLeftPath.Text = dlg.FileName; }
                 else { _rightPath = dlg.FileName; _lblRightPath.Text = dlg.FileName; }
+                Logger.Info("파일 선택(" + (left ? "좌" : "우") + "): " + dlg.FileName);
                 _settings.LastFolder = Path.GetDirectoryName(dlg.FileName);
                 _settings.Save();
             }
@@ -308,6 +402,7 @@ namespace ExcelDiffMerge
         private void LoadAndCompare(bool useCsv)
         {
             if (_busy) return;
+            Logger.Info("비교 시작 (" + (useCsv ? "CSV" : "Excel COM") + ")  좌=" + _leftPath + "  우=" + _rightPath);
             _pendingLeft.Clear();
             _pendingRight.Clear();
             _progress.Visible = true;
@@ -338,6 +433,7 @@ namespace ExcelDiffMerge
             SetBusy(false);
             if (err != null)
             {
+                Logger.Error("로드 실패", err);
                 _lblSummary.Text = "오류: " + err.Message;
                 MessageBox.Show(this, DescribeError(err), "로드 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
@@ -361,11 +457,14 @@ namespace ExcelDiffMerge
             }
             catch (Exception ex)
             {
+                Logger.Error("diff 계산 실패", ex);
                 _lblSummary.Text = "비교 오류: " + ex.Message;
                 return;
             }
             PopulateTabs();
             _lblSummary.Text = _diff.Summary() + "  [" + AlignName() + "]";
+            Logger.Info("비교 결과: " + _diff.Summary() + " [" + AlignName() + "]");
+            UpdateButtonStates();
         }
 
         private string AlignName()
@@ -400,6 +499,7 @@ namespace ExcelDiffMerge
         {
             _busy = busy;
             if (_tool != null) _tool.Enabled = !busy;
+            if (_tool2 != null) _tool2.Enabled = !busy;
         }
 
         private static string DescribeError(Exception ex)
@@ -774,6 +874,9 @@ namespace ExcelDiffMerge
             string extra = skipped > 0 ? string.Format("  (행추가/삭제 {0}건은 미지원)", skipped) : "";
             _lblSummary.Text = string.Format("병합 대기 좌:{0} 우:{1}  (이번 {2}개 {3}){4}",
                 _pendingLeft.Count, _pendingRight.Count, applied, leftToRight ? "좌→우" : "우→좌", extra);
+            Logger.Info(string.Format("병합 대기 등록 {0} (적용 {1}, 미지원 {2}) 시트={3}",
+                leftToRight ? "좌→우" : "우→좌", applied, skipped, _curSheet != null ? _curSheet.Name : "?"));
+            UpdateButtonStates();
         }
 
         private void SaveMerges()
@@ -788,6 +891,8 @@ namespace ExcelDiffMerge
             }
             bool backup = MessageBox.Show(this, "원본 저장 전 백업 복사본을 만들까요? (권장: 예)",
                 "백업", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            Logger.Info(string.Format("저장 시작 (좌 {0}, 우 {1}, 백업={2})",
+                _pendingLeft.Count, _pendingRight.Count, backup));
             try
             {
                 SetBusy(true);
@@ -796,10 +901,12 @@ namespace ExcelDiffMerge
                 _pendingLeft.Clear();
                 _pendingRight.Clear();
                 _lblSummary.Text = "저장 완료. [비교]로 재검증을 권장합니다.";
+                Logger.Info("저장 완료");
                 Info("저장이 완료되었습니다.");
             }
             catch (Exception ex)
             {
+                Logger.Error("저장 실패", ex);
                 MessageBox.Show(this,
                     "저장 실패(원본 보존):\r\n" + ex.Message +
                     "\r\n\r\nDRM 편집권한이 없거나 파일이 잠겨있을 수 있습니다.",
@@ -808,6 +915,7 @@ namespace ExcelDiffMerge
             finally
             {
                 SetBusy(false);
+                UpdateButtonStates();
                 _gridLeft.Invalidate();
                 _gridRight.Invalidate();
             }

@@ -33,6 +33,7 @@ namespace ExcelDiffMerge
             {
                 throw new FileNotFoundException("CSV 경로를 찾을 수 없습니다: " + path);
             }
+            Logger.Info("CSV 로드 완료: " + path + " (시트 " + wb.Sheets.Count + "개)");
             return wb;
         }
 
